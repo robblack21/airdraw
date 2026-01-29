@@ -276,16 +276,13 @@ export function setupControls(dom) {
         if (keys.hasOwnProperty(k)) keys[k] = false;
     });
     
-    // Zoom (Wheel) -> Splat Scale
+    // Zoom (Wheel) -> Camera FOV
     dom.addEventListener('wheel', (e) => {
         e.preventDefault();
-        if (activeSplat) {
-            const scaleSpeed = 0.001;
-            const delta = -e.deltaY * scaleSpeed;
-            const newScale = Math.max(0.01, activeSplat.scale.x + delta);
-            activeSplat.scale.set(newScale, newScale, newScale);
-            console.log("Splat Scale:", newScale.toFixed(4));
-        }
+        const zoomSpeed = 0.05;
+        camera.fov += e.deltaY * zoomSpeed;
+        camera.fov = Math.max(5, Math.min(100, camera.fov));
+        camera.updateProjectionMatrix();
     }, { passive: false });
     
     // Toggle Active Splat (T key)
@@ -307,35 +304,33 @@ export function setupControls(dom) {
 export function animateScene(time) {
     const dt = clock.getDelta();
 
-    if (activeSplat) {
-        // 1. WASD + QE -> Splat Position
-        const moveSpeed = 0.5; 
-        const move = new THREE.Vector3();
-        
-        if (keys.w) move.z -= 1; 
-        if (keys.s) move.z += 1;
-        if (keys.a) move.x -= 1;
-        if (keys.d) move.x += 1;
-        if (keys.q) move.y -= 1; 
-        if (keys.e) move.y += 1; 
-        
-        if (move.lengthSq() > 0) {
-            move.normalize().multiplyScalar(moveSpeed * dt);
-            activeSplat.position.add(move);
-            console.log(`Splat Pos (${activeSplat === splatWhite ? 'W' : 'B'}): ${activeSplat.position.x.toFixed(3)}, ${activeSplat.position.y.toFixed(3)}, ${activeSplat.position.z.toFixed(3)}`);
-        }
-
-        // 2. IJKL -> Splat Rotation
-        const rotSpeed = 1.0;
-        if (keys.j) activeSplat.rotation.y += rotSpeed * dt;
-        if (keys.l) activeSplat.rotation.y -= rotSpeed * dt;
-        if (keys.i) activeSplat.rotation.x += rotSpeed * dt;
-        if (keys.k) activeSplat.rotation.x -= rotSpeed * dt;
-        
-        if (keys.j || keys.l || keys.i || keys.k) {
-             console.log(`Splat Rot (${activeSplat === splatWhite ? 'W' : 'B'}): X=${(activeSplat.rotation.x * 180/Math.PI).toFixed(1)}, Y=${(activeSplat.rotation.y * 180/Math.PI).toFixed(1)}`);
-        }
+    // 1. WASD + QE -> Camera Position
+    const move = new THREE.Vector3();
+    
+    // Forward/Back (Z)
+    if (keys.w) move.z -= 1; 
+    if (keys.s) move.z += 1;
+    
+    // Left/Right (X)
+    if (keys.a) move.x -= 1;
+    if (keys.d) move.x += 1;
+    
+    // Up/Down (Y)
+    if (keys.q) move.y -= 1; 
+    if (keys.e) move.y += 1; 
+    
+    if (move.lengthSq() > 0) {
+        move.normalize().multiplyScalar(moveSpeed * dt);
+        // Transform move to camera local space
+        move.applyQuaternion(camera.quaternion);
+        camera.position.add(move);
     }
+
+    // 2. IJKL -> Camera Rotation (Look)
+    if (keys.j) camera.rotation.y += rotSpeed * dt;
+    if (keys.l) camera.rotation.y -= rotSpeed * dt;
+    if (keys.i) camera.rotation.x += rotSpeed * dt;
+    if (keys.k) camera.rotation.x -= rotSpeed * dt;
 
     renderer.render(scene, camera);
 }
@@ -494,7 +489,7 @@ async function loadModels() {
     
     // --- FURNITURE ---
     try {
-        const table = await new Promise((resolve, reject) => loader.load('/assets/table_with_chairs.glb', resolve, undefined, reject));
+        const table = await new Promise((resolve, reject) => loader.load(`${import.meta.env.BASE_URL}assets/table_with_chairs.glb`, resolve, undefined, reject));
         table.scene.traverse(c => { 
             if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
             // Push chairs back

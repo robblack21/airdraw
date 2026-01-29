@@ -60933,6 +60933,8 @@ const keys = {
   k: false,
   l: false
 };
+const moveSpeed = 2;
+const rotSpeed = 1.5;
 function setupControls(dom) {
   if (!dom) return;
   window.addEventListener("keydown", (e) => {
@@ -60945,13 +60947,10 @@ function setupControls(dom) {
   });
   dom.addEventListener("wheel", (e) => {
     e.preventDefault();
-    if (activeSplat) {
-      const scaleSpeed = 1e-3;
-      const delta = -e.deltaY * scaleSpeed;
-      const newScale = Math.max(0.01, activeSplat.scale.x + delta);
-      activeSplat.scale.set(newScale, newScale, newScale);
-      console.log("Splat Scale:", newScale.toFixed(4));
-    }
+    const zoomSpeed = 0.05;
+    camera.fov += e.deltaY * zoomSpeed;
+    camera.fov = Math.max(5, Math.min(100, camera.fov));
+    camera.updateProjectionMatrix();
   }, { passive: false });
   window.addEventListener("keydown", (e) => {
     if (e.key.toLowerCase() === "t") {
@@ -60968,29 +60967,22 @@ function setupControls(dom) {
 }
 function animateScene(time) {
   const dt = clock.getDelta();
-  if (activeSplat) {
-    const moveSpeed2 = 0.5;
-    const move = new Vector3();
-    if (keys.w) move.z -= 1;
-    if (keys.s) move.z += 1;
-    if (keys.a) move.x -= 1;
-    if (keys.d) move.x += 1;
-    if (keys.q) move.y -= 1;
-    if (keys.e) move.y += 1;
-    if (move.lengthSq() > 0) {
-      move.normalize().multiplyScalar(moveSpeed2 * dt);
-      activeSplat.position.add(move);
-      console.log(`Splat Pos (${activeSplat === splatWhite ? "W" : "B"}): ${activeSplat.position.x.toFixed(3)}, ${activeSplat.position.y.toFixed(3)}, ${activeSplat.position.z.toFixed(3)}`);
-    }
-    const rotSpeed2 = 1;
-    if (keys.j) activeSplat.rotation.y += rotSpeed2 * dt;
-    if (keys.l) activeSplat.rotation.y -= rotSpeed2 * dt;
-    if (keys.i) activeSplat.rotation.x += rotSpeed2 * dt;
-    if (keys.k) activeSplat.rotation.x -= rotSpeed2 * dt;
-    if (keys.j || keys.l || keys.i || keys.k) {
-      console.log(`Splat Rot (${activeSplat === splatWhite ? "W" : "B"}): X=${(activeSplat.rotation.x * 180 / Math.PI).toFixed(1)}, Y=${(activeSplat.rotation.y * 180 / Math.PI).toFixed(1)}`);
-    }
+  const move = new Vector3();
+  if (keys.w) move.z -= 1;
+  if (keys.s) move.z += 1;
+  if (keys.a) move.x -= 1;
+  if (keys.d) move.x += 1;
+  if (keys.q) move.y -= 1;
+  if (keys.e) move.y += 1;
+  if (move.lengthSq() > 0) {
+    move.normalize().multiplyScalar(moveSpeed * dt);
+    move.applyQuaternion(camera.quaternion);
+    camera.position.add(move);
   }
+  if (keys.j) camera.rotation.y += rotSpeed * dt;
+  if (keys.l) camera.rotation.y -= rotSpeed * dt;
+  if (keys.i) camera.rotation.x += rotSpeed * dt;
+  if (keys.k) camera.rotation.x -= rotSpeed * dt;
   renderer.render(scene, camera);
 }
 function updateCameraPose(role) {
@@ -61098,7 +61090,7 @@ async function loadModels() {
   await loadSplat("white_view.splat", true);
   await loadSplat("black_view.splat", false);
   try {
-    const table = await new Promise((resolve, reject) => loader.load("/assets/table_with_chairs.glb", resolve, void 0, reject));
+    const table = await new Promise((resolve, reject) => loader.load(`${"/chess/"}assets/table_with_chairs.glb`, resolve, void 0, reject));
     table.scene.traverse((c) => {
       if (c.isMesh) {
         c.castShadow = true;
