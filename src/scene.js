@@ -447,7 +447,7 @@ async function loadModels() {
                 // Pos: -0.415, 0.948, 2.115
                 
                 const d2r = Math.PI / 180;
-                const scale = 0.375;
+                const scale = 0.375 * 2.5;
                 splat.scale.set(scale, scale, scale);
 
                 if (isWhite) {
