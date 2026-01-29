@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { SplatLoader, SplatMesh } from '@sparkjsdev/spark'; 
+// const SplatLoader = class {}; const SplatMesh = class {}; 
 import { trackingState } from './vision.js'; 
 
 export let scene, camera, renderer;
@@ -375,7 +376,7 @@ export async function initScene() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
-    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     document.getElementById('app').appendChild(renderer.domElement);
 
     // Lights
@@ -438,7 +439,7 @@ async function loadModels() {
     console.log("Loading Environments (Splats)...");
     
     const loadSplat = async (filename, isWhite) => {
-        const path = `/assets/${filename}`;
+        const path = `${import.meta.env.BASE_URL}assets/${filename}`;
         try {
             const splatData = await splatLoader.loadAsync(path);
             const splat = new SplatMesh({ packedSplats: splatData });
@@ -549,7 +550,7 @@ async function loadPieces() {
     
     for (const name of variants) {
         try {
-            const gltf = await new Promise((resolve, reject) => loader.load(`/assets/${name}.glb`, resolve, undefined, reject));
+            const gltf = await new Promise((resolve, reject) => loader.load(`${import.meta.env.BASE_URL}assets/${name}.glb`, resolve, undefined, reject));
             gltf.scene.traverse(c => {
                 if(c.isMesh) {
                     c.castShadow = true;

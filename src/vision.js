@@ -4,6 +4,10 @@ import {
     HandLandmarker, 
     ImageSegmenter 
 } from '@mediapipe/tasks-vision';
+// const FilesetResolver = { forVisionTasks: async () => ({}) };
+// const FaceLandmarker = { createFromOptions: async () => ({}) };
+// const HandLandmarker = { createFromOptions: async () => ({}) };
+// const ImageSegmenter = { createFromOptions: async () => ({}) };
 import { getLocalVideoElement } from './video.js';
 
 let faceLandmarker;
@@ -29,7 +33,7 @@ export async function initVision(sceneContext) {
     
     // Load WASM files (Local public/ copy)
     const visionGen = await FilesetResolver.forVisionTasks(
-        "/"
+        import.meta.env.BASE_URL
     );
 
     // 1. Face Landmarker (Head Tracking)
