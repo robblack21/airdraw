@@ -14,11 +14,12 @@ export default defineConfig({
     target: 'esnext',
     minify: false,
     rollupOptions: {
-      external: ['@mediapipe/tasks-vision', '@sparkjsdev/spark'],
+      external: ['@mediapipe/tasks-vision', '@sparkjsdev/spark', 'three'],
       output: {
         paths: {
           '@mediapipe/tasks-vision': 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/vision_bundle.mjs',
-          '@sparkjsdev/spark': 'https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@0.1.10/dist/spark.module.js'
+          '@sparkjsdev/spark': 'https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@0.1.10/dist/spark.module.js',
+          'three': 'https://unpkg.com/three@0.160.0/build/three.module.js'
         }
       }
     }
