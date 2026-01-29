@@ -19,7 +19,7 @@ export default defineConfig({
         paths: {
           '@mediapipe/tasks-vision': 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/vision_bundle.mjs',
           '@sparkjsdev/spark': 'https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@0.1.10/dist/spark.module.js',
-          'three': './three-polyfill.js'
+          'three': '/chess/three-polyfill.js'
         }
       }
     }
