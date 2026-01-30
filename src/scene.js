@@ -307,7 +307,7 @@ export function setupControls(dom) {
 export function animateScene(time) {
     const dt = clock.getDelta();
 
-    // 1. WASD + QE -> Camera Position
+    // 1. WASD + QE -> Camera Base Position
     const move = new THREE.Vector3();
     
     // Forward/Back (Z)
@@ -324,9 +324,22 @@ export function animateScene(time) {
     
     if (move.lengthSq() > 0) {
         move.normalize().multiplyScalar(moveSpeed * dt);
-        // Transform move to camera local space
+        // Transform move to camera local space (excluding parallax)
         move.applyQuaternion(camera.quaternion);
-        camera.position.add(move);
+        // Update both current and base to keep them synced during movement
+        // But wait, we want to maintain the "Base" as the center.
+        // Let's modify 'cameraBasePos' instead of camera.position directly.
+    }
+    
+    // Initialize base pos if tracking lost or first run? 
+    // We need a persistent 'cameraBasePos'.
+    // Since we don't have it declared globally, let's use the camera.position as base 
+    // IF we first subtract the LAST applied parallax? 
+    // Easier: Store 'cameraBasePos' in module scope.
+    
+    // Just apply move to cameraBasePos
+    if (move.lengthSq() > 0) {
+       cameraBasePos.add(move);
     }
 
     // 2. IJKL -> Camera Rotation (Look)
@@ -335,44 +348,36 @@ export function animateScene(time) {
     if (keys.i) camera.rotation.x += rotSpeed * dt;
     if (keys.k) camera.rotation.x -= rotSpeed * dt;
 
+    // Reset camera to base before applying parallax
+    camera.position.copy(cameraBasePos);
+
     // 3. Head Tracking Parallax
-    // We apply this non-destructively so WASD still works as the "base"
     if (trackingState && trackingState.headPose && trackingState.headPose.faceLandmarks && trackingState.headPose.faceLandmarks.length > 0) {
-        // Simple parallax: Map head X/Y to camera X/Y
-        // Head center is roughly 0.5, 0.5 in normalized coordinates? 
-        // MediaPipe landmarks are 0..1. Center is 0.5.
         const face = trackingState.headPose.faceLandmarks[0];
-        // Use nose tip (index 1)
-        const nose = face[1];
+        const nose = face[1]; // Index 1 is often nose tip
         
-        // Invert X because camera moves opposite to head to create parallax around pivot
-        // or move WITH head to simulate window?
-        // Let's assume "Window" effect: Head moves Right -> Camera moves Left relative to content?
-        // Actually for "Hologram", if I move right, I should see the left side of the object.
-        // So Camera moves Right.
+        // Map 0..1 to -1..1
+        // Invert X for window effect (Head Left -> View Left -> Camera Left?)
+        // If I move left, I see left side of object -> Camera moves Left.
         
-        const offsetX = (nose.x - 0.5) * 1.5; // Scale factor
-        const offsetY = (nose.y - 0.5) * 1.5;
+        const dx = (nose.x - 0.5) * 2.0; 
+        const dy = (nose.y - 0.5) * 2.0;
         
-        // Save base
-        const basePos = camera.position.clone();
+        const rangeX = 0.5; // Meters
+        const rangeY = 0.5;
         
-        // Apply offset (damped)
-        camera.position.x += offsetX * dt * 5.0; // Lerp-ish? No, direct mapping is jittery.
-        // Let's just Add for now, but really we want to offset from a "Rest" position.
-        // Since WASD moves 'Rest', we need separate storage.
-        // For now, let's just apply it to the base position if the user isn't moving with WASD?
-        // No, let's just leave WASD valid.
+        // Parallax Offset
+        const offsetX = -dx * rangeX; 
+        const offsetY = -dy * rangeY;
         
-        // Better: Apply Parallax to Projection Matrix (true off-axis) or just Position (cheaper).
-        // Position:
-        // camera.position.x += (nose.x - 0.5) * 0.1; 
-        // This would drift.
+        // Apply to camera local X/Y? Or World?
+        // Usually World X/Y matching the screen plane.
+        // Let's apply in Camera Local space (Left/Right, Up/Down)
         
-        // Correct way with Scene State:
-        // camera.position.lerp(targetPos, 0.1) where targetPos = base + headOffset.
-        // But we don't have 'base' separate from 'camera.position'.
-        // Let's skip complex parallax for now and just log it works, or apply strict mapped offset if Overhead is OFF.
+        const parallax = new THREE.Vector3(offsetX, offsetY, 0);
+        parallax.applyQuaternion(camera.quaternion);
+        
+        camera.position.add(parallax);
     }
 
     renderer.render(scene, camera);
@@ -381,32 +386,27 @@ export function animateScene(time) {
 let isOverhead = false;
 let savedCameraPos = new THREE.Vector3();
 let savedCameraQuat = new THREE.Quaternion();
+let cameraBasePos = new THREE.Vector3(); // New Base
 
 export function toggleOverheadView() {
     isOverhead = !isOverhead;
     
     if (isOverhead) {
-        // Save current
-        savedCameraPos.copy(camera.position);
+        // Save base, not current (which has parallax)
+        savedCameraPos.copy(cameraBasePos); 
         savedCameraQuat.copy(camera.quaternion);
         
-        // Set to Overhead
-        // High up, looking down
-        camera.position.set(0, 3.5, 0);
-        camera.lookAt(0, 0, 0);
-        // Rotate so White is 'down' (Z positive)
-        // Default lookAt from (0,3.5,0) to (0,0,0) with Up (0,1,0) might be ambiguous or X-aligned?
-        // ThreeJS LookAt with strictly vertical vector needs care.
-        // Let's offset slightly Z to define 'up' orientation
         camera.position.set(0, 3.5, 0.01);
         camera.lookAt(0, 0, 0);
         
-        // Align orientation based on role?
-        // If White, we want +Z at bottom.
-        // If overhead, maybe just standard map view.
-        
+        // Sync base to overhead so controls don't snap back?
+        // No, disable controls in overhead? 
+        // For now, just set cameraBasePos to overhead pos to allow panning
+        cameraBasePos.copy(camera.position);
+
     } else {
         // Restore
+        cameraBasePos.copy(savedCameraPos);
         camera.position.copy(savedCameraPos);
         camera.quaternion.copy(savedCameraQuat);
     }
@@ -418,12 +418,11 @@ export function updateCameraPose(role) {
     currentRole = role;
     updateVolumetricPose();
     
-    if (isOverhead) return; // Don't reset if in overhead mode
+    if (isOverhead) return;
 
-    // Camera: Up and Forward
     if (role === 'w') {
         initialCameraPos.set(0, 1.8, 2.0); 
-        initialCameraLookAt.set(0, 0.9, -0.4); // Look higher to push board down
+        initialCameraLookAt.set(0, 0.9, -0.4); 
     } else if (role === 'b') {
         initialCameraPos.set(0, 1.8, -2.0); 
         initialCameraLookAt.set(0, 0.9, 0.4);
@@ -434,6 +433,9 @@ export function updateCameraPose(role) {
     
     camera.position.copy(initialCameraPos);
     camera.lookAt(initialCameraLookAt);
+    
+    // Sync Base
+    cameraBasePos.copy(camera.position);
 }
 
 export async function initScene() {
@@ -446,6 +448,7 @@ export async function initScene() {
     camera = new THREE.PerspectiveCamera(19, window.innerWidth / window.innerHeight, 0.1, 100);
     camera.position.set(0, 2.4, 1.6); 
     camera.lookAt(0, 0, -0.5);
+    cameraBasePos.copy(camera.position);
 
     renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(window.innerWidth, window.innerHeight);

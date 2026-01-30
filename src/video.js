@@ -43,13 +43,31 @@ export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {
 
     try {
         console.log("Joining Daily room...");
-        // If we have a custom video source (e.g. depth processed), use it.
-        const joinOptions = { url: ROOM_URL, audio: true };
+        
+        // Explicitly get local audio to ensure it works even with custom videoSource
+        let audioTrack = null;
+        try {
+            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            audioTrack = audioStream.getAudioTracks()[0];
+            console.log("Acquired local audio track:", audioTrack.label);
+        } catch(e) {
+            console.warn("Failed to get local audio:", e);
+        }
+
+        const joinOptions = { url: ROOM_URL };
+        
         if (videoSource) {
             console.log("Using custom video source for Depth/Volumetric video");
             joinOptions.videoSource = videoSource;
         } else {
             joinOptions.video = true;
+        }
+        
+        if (audioTrack) {
+             joinOptions.audioSource = audioTrack;
+        } else {
+             // Fallback
+             joinOptions.audio = true;
         }
         
         await callObject.join(joinOptions);
