@@ -1,5 +1,6 @@
 import { toggleAudio, toggleVideo, getDevices, setInputDevice } from './video.js';
 import { setHeadTrackingEnabled } from './vision.js';
+import { toggleOverheadView } from './scene.js';
 
 export class CallUI {
     constructor() {
@@ -11,6 +12,7 @@ export class CallUI {
         this.settingsMenu = document.getElementById('settings-menu');
         this.audioSelect = document.getElementById('audio-select');
         this.videoSelect = document.getElementById('video-select');
+        this.overheadBtn = document.getElementById('btn-overhead');
         
         this.isMicOn = true;
         this.isCamOn = true;
@@ -40,6 +42,15 @@ export class CallUI {
                 this.camBtn.textContent = this.isCamOn ? '📷' : '📷🚫';
                 this.camBtn.style.opacity = this.isCamOn ? '1' : '0.5';
                 console.log("Cam toggled:", this.isCamOn);
+            });
+        }
+        
+        // Overhead View
+        if (this.overheadBtn) {
+            this.overheadBtn.addEventListener('click', () => {
+                const isActive = toggleOverheadView();
+                this.overheadBtn.style.opacity = isActive ? '1' : '0.5';
+                console.log("Overhead View toggled:", isActive);
             });
         }
         

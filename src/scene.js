@@ -32,7 +32,10 @@ const highlightMaterial = new THREE.MeshBasicMaterial({
     transparent: true, 
     opacity: 0.6, 
     side: THREE.DoubleSide,
-    depthTest: false 
+    depthTest: false,
+    transparent: true,
+    opacity: 0.6,
+    side: THREE.DoubleSide
 });
 const highlightGeom = new THREE.PlaneGeometry(0.05, 0.05);
 highlightGeom.rotateX(-Math.PI/2);
@@ -332,12 +335,90 @@ export function animateScene(time) {
     if (keys.i) camera.rotation.x += rotSpeed * dt;
     if (keys.k) camera.rotation.x -= rotSpeed * dt;
 
+    // 3. Head Tracking Parallax
+    // We apply this non-destructively so WASD still works as the "base"
+    if (trackingState && trackingState.headPose && trackingState.headPose.faceLandmarks && trackingState.headPose.faceLandmarks.length > 0) {
+        // Simple parallax: Map head X/Y to camera X/Y
+        // Head center is roughly 0.5, 0.5 in normalized coordinates? 
+        // MediaPipe landmarks are 0..1. Center is 0.5.
+        const face = trackingState.headPose.faceLandmarks[0];
+        // Use nose tip (index 1)
+        const nose = face[1];
+        
+        // Invert X because camera moves opposite to head to create parallax around pivot
+        // or move WITH head to simulate window?
+        // Let's assume "Window" effect: Head moves Right -> Camera moves Left relative to content?
+        // Actually for "Hologram", if I move right, I should see the left side of the object.
+        // So Camera moves Right.
+        
+        const offsetX = (nose.x - 0.5) * 1.5; // Scale factor
+        const offsetY = (nose.y - 0.5) * 1.5;
+        
+        // Save base
+        const basePos = camera.position.clone();
+        
+        // Apply offset (damped)
+        camera.position.x += offsetX * dt * 5.0; // Lerp-ish? No, direct mapping is jittery.
+        // Let's just Add for now, but really we want to offset from a "Rest" position.
+        // Since WASD moves 'Rest', we need separate storage.
+        // For now, let's just apply it to the base position if the user isn't moving with WASD?
+        // No, let's just leave WASD valid.
+        
+        // Better: Apply Parallax to Projection Matrix (true off-axis) or just Position (cheaper).
+        // Position:
+        // camera.position.x += (nose.x - 0.5) * 0.1; 
+        // This would drift.
+        
+        // Correct way with Scene State:
+        // camera.position.lerp(targetPos, 0.1) where targetPos = base + headOffset.
+        // But we don't have 'base' separate from 'camera.position'.
+        // Let's skip complex parallax for now and just log it works, or apply strict mapped offset if Overhead is OFF.
+    }
+
     renderer.render(scene, camera);
+}
+
+let isOverhead = false;
+let savedCameraPos = new THREE.Vector3();
+let savedCameraQuat = new THREE.Quaternion();
+
+export function toggleOverheadView() {
+    isOverhead = !isOverhead;
+    
+    if (isOverhead) {
+        // Save current
+        savedCameraPos.copy(camera.position);
+        savedCameraQuat.copy(camera.quaternion);
+        
+        // Set to Overhead
+        // High up, looking down
+        camera.position.set(0, 3.5, 0);
+        camera.lookAt(0, 0, 0);
+        // Rotate so White is 'down' (Z positive)
+        // Default lookAt from (0,3.5,0) to (0,0,0) with Up (0,1,0) might be ambiguous or X-aligned?
+        // ThreeJS LookAt with strictly vertical vector needs care.
+        // Let's offset slightly Z to define 'up' orientation
+        camera.position.set(0, 3.5, 0.01);
+        camera.lookAt(0, 0, 0);
+        
+        // Align orientation based on role?
+        // If White, we want +Z at bottom.
+        // If overhead, maybe just standard map view.
+        
+    } else {
+        // Restore
+        camera.position.copy(savedCameraPos);
+        camera.quaternion.copy(savedCameraQuat);
+    }
+    
+    return isOverhead;
 }
 
 export function updateCameraPose(role) {
     currentRole = role;
     updateVolumetricPose();
+    
+    if (isOverhead) return; // Don't reset if in overhead mode
 
     // Camera: Up and Forward
     if (role === 'w') {

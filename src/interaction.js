@@ -28,8 +28,17 @@ function onClick(event, gameCtx) {
     const intersects = raycaster.intersectObjects(scene.children, true);
 
     if (intersects.length > 0) {
+        // Debug first hit
+        // console.log("Hit:", intersects[0].object.name, intersects[0].object.userData);
+        
         // Find visible target: Piece, Board, or Highlight
         let target = intersects.find(i => i.object.visible && (i.object.userData.tile || i.object.name.includes("Board") || i.object.geometry.type === 'PlaneGeometry' || i.object.geometry.type === 'BoxGeometry')); 
+        
+        if (target) {
+             console.log("Interact Target:", target.object.name || target.object.type, target.point);
+        } else {
+             console.log("No valid target found in " + intersects.length + " intersections");
+        }
         
         if (!target) { deselect(); return; }
         
