@@ -45,14 +45,24 @@ function onClick(event, gameCtx) {
         const obj = target.object;
         
         // 1. Clicked a Piece? (Has userData.tile)
-        // Need to check parent too if clicked submesh
+        // Traverse up to find the group that holds the userData
         let pieceObj = obj;
-        if (!pieceObj.userData.tile && pieceObj.parent && pieceObj.parent.userData.tile) {
+        while (pieceObj) {
+            if (pieceObj.userData && pieceObj.userData.tile) {
+                break;
+            }
             pieceObj = pieceObj.parent;
+            // Stop if we hit scene root
+            if (pieceObj && pieceObj.type === 'Scene') {
+                pieceObj = null;
+                break;
+            }
         }
 
-        if (pieceObj.userData.tile) {
+        if (pieceObj && pieceObj.userData.tile) {
             const sq = pieceObj.userData.tile;
+            console.log("Passed Tile Check:", sq); // Debug Logic
+            
             const piece = gameCtx.get(sq);
             
             // If own piece -> Select

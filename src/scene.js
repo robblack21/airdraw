@@ -74,7 +74,7 @@ export function createCutout(videoElement) {
     const material = new THREE.ShaderMaterial({
         uniforms: {
             map: { value: texture },
-            depthScale: { value: 0.5 }, 
+            depthScale: { value: 1.0 }, // Expanded 2x from 0.5
             minDepth: { value: 0.0 },
             maxDepth: { value: 0.5 },
             splatScale: { value: 0.015 }, 
@@ -363,8 +363,9 @@ export function animateScene(time) {
         const dx = (nose.x - 0.5) * 2.0; 
         const dy = (nose.y - 0.5) * 2.0;
         
-        const rangeX = 0.5; // Meters
-        const rangeY = 0.5;
+        // Reduced extent by 5x (was 0.5)
+        const rangeX = 0.1; 
+        const rangeY = 0.1;
         
         // Parallax Offset
         const offsetX = -dx * rangeX; 
