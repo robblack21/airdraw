@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:apps.apple.com)",
+      "Bash(curl:*)",
+      "Bash(npm install:*)",
+      "Bash(export PATH=\"/usr/local/bin:/opt/homebrew/bin:/Users/robblack/.nvm/versions/node/*/bin:$HOME/.bun/bin:$PATH\")",
+      "Bash(export PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\")",
+      "Bash(/usr/local/bin/npm install)",
+      "Bash(PATH=\"/usr/local/bin:$PATH\" npm install:*)",
+      "Bash(PATH=\"/usr/local/bin:$PATH\" npx vite build:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:unpkg.com)",
+      "WebFetch(domain:app.unpkg.com)",
+      "Bash(gh repo create:*)",
+      "Bash(git remote set-url:*)"
+    ]
+  }
+}

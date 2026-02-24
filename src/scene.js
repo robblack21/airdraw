@@ -1,701 +1,434 @@
-import * as THREE from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { SplatLoader, SplatMesh } from '@sparkjsdev/spark'; 
-// const SplatLoader = class {}; const SplatMesh = class {}; 
-import { trackingState } from './vision.js'; 
+import * as THREE from "three";
+import { trackingState } from "./vision.js";
 
 export let scene, camera, renderer;
 let clock;
-let boardGroup = new THREE.Group();
-let piecesGroup = new THREE.Group();
-let interactables = []; 
 
-let initialCameraPos = new THREE.Vector3(0, 1.2, 0.8); 
-let initialCameraLookAt = new THREE.Vector3(0, 0.4, 0);
-
-// Volumetric State
-let volumetricSplats = null; 
-let envSplat = null; // New global for tuning 
+// Volumetric Video State
+let volumetricSplats = null;
 let cutoutTexture = null;
 
-const loader = new GLTFLoader();
-const splatLoader = new SplatLoader();
+let currentRole = "w";
 
-let currentRole = 'w'; 
-
-// --- Interaction Visuals ---
-const highlightGroup = new THREE.Group();
-highlightGroup.renderOrder = 2000; // Debug: Ensure drawn on top
-// Debug: disable depthTest to ensure visibility even if inside board/floor
-const highlightMaterial = new THREE.MeshBasicMaterial({ 
-    color: 0xffff00, 
-    transparent: true, 
-    opacity: 0.6, 
-    side: THREE.DoubleSide,
-    depthTest: false,
-    transparent: true,
-    opacity: 0.6,
-    side: THREE.DoubleSide
-});
-const highlightGeom = new THREE.PlaneGeometry(0.05, 0.05);
-highlightGeom.rotateX(-Math.PI/2);
-
-// Create Volumetric Video as Dynamic Gaussian Splats (Instanced Quads)
-export function createCutout(videoElement) {
-    if (volumetricSplats) {
-        if (cutoutTexture.map.image !== videoElement) {
-            cutoutTexture.map.image = videoElement;
-            cutoutTexture.map.needsUpdate = true;
-        }
-        return;
-    }
-    
-    // 1. Setup Instanced Geometry (Quads)
-    const width = 252;
-    const height = 252;
-    const instanceCount = width * height;
-    
-    // Base geometry: Simple Quad centered at 0,0
-    const baseGeometry = new THREE.PlaneGeometry(1, 1);
-    const geometry = new THREE.InstancedBufferGeometry();
-    geometry.index = baseGeometry.index;
-    geometry.attributes.position = baseGeometry.attributes.position;
-    geometry.attributes.uv = baseGeometry.attributes.uv;
-    geometry.instanceCount = instanceCount;
-
-    // 2. Texture
-    const texture = new THREE.VideoTexture(videoElement);
-    texture.format = THREE.RGBAFormat;
-    texture.colorSpace = THREE.SRGBColorSpace; 
-    
-    cutoutTexture = { map: texture }; 
-
-    // 3. Gaussian Splat Shader
-    const material = new THREE.ShaderMaterial({
-        uniforms: {
-            map: { value: texture },
-            depthScale: { value: 1.0 }, // Expanded 2x from 0.5
-            minDepth: { value: 0.0 },
-            maxDepth: { value: 0.5 },
-            splatScale: { value: 0.015 }, 
-            unprojectScale: { value: 1.15 },
-            aspectRatio: { value: 1.0 }   
-        },
-        vertexShader: `
-            uniform sampler2D map;
-            uniform float depthScale;
-            uniform float splatScale;
-            uniform float unprojectScale;
-            
-            varying vec2 vUv;       
-            varying vec2 vImgUv;    
-            varying float vDepth;
-            
-            const float width = 252.0;
-            const float height = 252.0;
-
-            void main() {
-                vUv = uv;
-                
-                // 1. Calculate specific pixel UV from Instance ID
-                float gridX = mod(float(gl_InstanceID), width);
-                float gridY = floor(float(gl_InstanceID) / width);
-                
-                // Image Y is flipped usually in Texture vs Geom
-                vec2 gridUv = vec2((gridX + 0.5) / width, (gridY + 0.5) / height);
-                vImgUv = gridUv;
-                
-                // 2. Sample Depth (Right Half)
-                // Map Layout: [RGB | Depth]
-                vec2 depthUv = vec2(gridUv.x * 0.5 + 0.5, gridUv.y);
-                float d = texture2D(map, depthUv).r;
-                vDepth = d;
-                
-                // 3. Unproject 
-                // Center 0,0
-                float x = ((gridX / width) - 0.5) * unprojectScale;
-                float y = ((gridY / height) - 0.5) * unprojectScale;
-                
-                vec3 centerPos = vec3(x, y, 0.0);
-                centerPos.z += d * depthScale;
-                
-                // 4. Billboarding & Scale
-                vec4 mvPosition = modelViewMatrix * vec4(centerPos, 1.0);
-                vec2 scale = vec2(splatScale);
-                mvPosition.xy += position.xy * scale; // Instanced Billboard
-                
-                gl_Position = projectionMatrix * mvPosition;
-            }
-        `,
-        fragmentShader: `
-            uniform sampler2D map;
-            uniform float minDepth;
-            uniform float maxDepth;
-            
-            varying vec2 vUv;
-            varying vec2 vImgUv;
-            varying float vDepth;
-            
-            void main() {
-                // 1. Culling
-                if (vDepth < minDepth || vDepth > maxDepth) discard;
-                
-                // 2. Gaussian Shape (Soft Circle)
-                vec2 center = vUv - 0.5;
-                float distSq = dot(center, center);
-                float alpha = exp(-distSq * 10.0); 
-                
-                if (alpha < 0.01) discard;
-                
-                // 3. Color (Left Half)
-                vec2 colorUv = vec2(vImgUv.x * 0.5, vImgUv.y);
-                vec4 color = texture2D(map, colorUv);
-                
-                gl_FragColor = vec4(color.rgb, alpha);
-            }
-        `,
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.NormalBlending,
-        side: THREE.DoubleSide
-    });
-    
-    volumetricSplats = new THREE.InstancedMesh(geometry, material, instanceCount);
-    volumetricSplats.frustumCulled = false;
-    volumetricSplats.renderOrder = 999;
-    
-    scene.add(volumetricSplats);
-    updateVolumetricPose();
-}
-
-const _volUp = new THREE.Vector3(0, 1, 0); // Optimization
-
-function updateVolumetricPose() {
-    if (!volumetricSplats) return;
-    
-    // Transform to sit on chair
-    // Move closer (was 1.2) to be in front of chair backrest
-    const dist = 0.55; 
-    const height = 0.95;
-    
-    // Reduce scale (was 1.5) to avoid giant head
-    volumetricSplats.scale.set(0.65, 0.65, 0.65); 
-    
-    if (currentRole === 'w') {
-        volumetricSplats.position.set(0, height, -dist);
-        volumetricSplats.lookAt(0, height, dist); 
-    } else if (currentRole === 'b') {
-        volumetricSplats.position.set(0, height, dist);
-        volumetricSplats.lookAt(0, height, -dist); 
-    }
-    // Rotate 180 as requested
-    volumetricSplats.rotation.y += Math.PI;
-}
-
-export function highlightSquares(squares) {
-    highlightGroup.clear();
-    if (!squares || squares.length === 0) return;
-    
-    // Board config
-    const squareSize = 0.05996; // Same as updateBoard
-    
-    squares.forEach(sq => {
-        // Parse 'e4'
-        const file = sq.charCodeAt(0) - 97; // 'a'->0
-        const rank = parseInt(sq[1]) - 1;   // '1'->0
-        
-        const mesh = new THREE.Mesh(highlightGeom, highlightMaterial);
-        
-        // updateBoard Logic:
-        // rowIndex 0 (Rank 8) -> z = -3.5 * size.
-        // rowIndex 7 (Rank 1) -> z = 3.5 * size.
-        
-        // Input: 'e4'. Rank 3.
-        // rowIndex = 7 - 3 = 4.
-        // z = (4 - 3.5) * size.
-        
-        const rowIndex = 7 - rank;
-        const colIndex = file;
-        
-        const x = (colIndex - 3.5) * squareSize;
-        const z = (rowIndex - 3.5) * squareSize;
-        
-        mesh.position.set(x, 0.002, z); 
-        highlightGroup.add(mesh);
-    });
-}
-
-export function setPieceGlow(mesh, active) {
-    if (!mesh) return;
-    mesh.traverse(c => {
-        if (c.isMesh) {
-            if (active) {
-                if (c.userData.oldEmissive === undefined) {
-                    c.userData.oldEmissive = c.material.emissive ? c.material.emissive.getHex() : 0;
-                    c.userData.oldIntensity = c.material.emissiveIntensity || 0;
-                }
-                c.material.emissive = new THREE.Color(0xffaa00);
-                c.material.emissiveIntensity = 0.5;
-            } else {
-                if (c.userData.oldEmissive !== undefined) {
-                    c.material.emissive.setHex(c.userData.oldEmissive);
-                    c.material.emissiveIntensity = c.userData.oldIntensity;
-                } else {
-                    c.material.emissive.setHex(0);
-                    c.material.emissiveIntensity = 0;
-                }
-            }
-        }
-    });
-}
-
-export function setDepthThresholds(min, max) {
-    if (volumetricSplats && volumetricSplats.material) {
-        volumetricSplats.material.uniforms.minDepth.value = min;
-        volumetricSplats.material.uniforms.maxDepth.value = max;
-    }
-}
-
-// Control State
-const keys = { 
-    w:false, a:false, s:false, d:false, q:false, e:false,
-    i:false, j:false, k:false, l:false 
-};
-const moveSpeed = 2.0; 
-const rotSpeed = 1.5; // Radians per second
-let isRightClicking = false;
-let lastMouseX = 0;
-let lastMouseY = 0;
-
-export function setupControls(dom) {
-    if (!dom) return;
-    // Keyboard
-    window.addEventListener('keydown', (e) => {
-        const k = e.key.toLowerCase();
-        if (keys.hasOwnProperty(k)) keys[k] = true;
-    });
-    window.addEventListener('keyup', (e) => {
-        const k = e.key.toLowerCase();
-        if (keys.hasOwnProperty(k)) keys[k] = false;
-    });
-    
-    // Zoom (Wheel) -> Camera FOV
-    dom.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        const zoomSpeed = 0.05;
-        camera.fov += e.deltaY * zoomSpeed;
-        camera.fov = Math.max(5, Math.min(100, camera.fov));
-        camera.updateProjectionMatrix();
-    }, { passive: false });
-    
-    // Toggle Active Splat (T key)
-    window.addEventListener('keydown', (e) => {
-        if (e.key.toLowerCase() === 't') {
-            if (activeSplat === splatWhite) {
-                activeSplat = splatBlack;
-                console.log("Tuning: BLACK Splat");
-            } else {
-                activeSplat = splatWhite;
-                console.log("Tuning: WHITE Splat");
-            }
-        }
-    });
-
-    dom.addEventListener('contextmenu', e => e.preventDefault());
-}
-
-export function animateScene(time) {
-    const dt = clock.getDelta();
-
-    // 1. WASD + QE -> Camera Base Position
-    const move = new THREE.Vector3();
-    
-    // Forward/Back (Z)
-    if (keys.w) move.z -= 1; 
-    if (keys.s) move.z += 1;
-    
-    // Left/Right (X)
-    if (keys.a) move.x -= 1;
-    if (keys.d) move.x += 1;
-    
-    // Up/Down (Y)
-    if (keys.q) move.y -= 1; 
-    if (keys.e) move.y += 1; 
-    
-    if (move.lengthSq() > 0) {
-        move.normalize().multiplyScalar(moveSpeed * dt);
-        // Transform move to camera local space (excluding parallax)
-        move.applyQuaternion(camera.quaternion);
-        // Update both current and base to keep them synced during movement
-        // But wait, we want to maintain the "Base" as the center.
-        // Let's modify 'cameraBasePos' instead of camera.position directly.
-    }
-    
-    // Initialize base pos if tracking lost or first run? 
-    // We need a persistent 'cameraBasePos'.
-    // Since we don't have it declared globally, let's use the camera.position as base 
-    // IF we first subtract the LAST applied parallax? 
-    // Easier: Store 'cameraBasePos' in module scope.
-    
-    // Just apply move to cameraBasePos
-    if (move.lengthSq() > 0) {
-       cameraBasePos.add(move);
-    }
-
-    // 2. IJKL -> Camera Rotation (Look)
-    if (keys.j) camera.rotation.y += rotSpeed * dt;
-    if (keys.l) camera.rotation.y -= rotSpeed * dt;
-    if (keys.i) camera.rotation.x += rotSpeed * dt;
-    if (keys.k) camera.rotation.x -= rotSpeed * dt;
-
-    // Reset camera to base before applying parallax
-    camera.position.copy(cameraBasePos);
-
-    // 3. Head Tracking Parallax
-    if (trackingState && trackingState.headPose && trackingState.headPose.faceLandmarks && trackingState.headPose.faceLandmarks.length > 0) {
-        const face = trackingState.headPose.faceLandmarks[0];
-        const nose = face[1]; // Index 1 is often nose tip
-        
-        // Map 0..1 to -1..1
-        // Invert X for window effect (Head Left -> View Left -> Camera Left?)
-        // If I move left, I see left side of object -> Camera moves Left.
-        
-        const dx = (nose.x - 0.5) * 2.0; 
-        const dy = (nose.y - 0.5) * 2.0;
-        
-        // Reduced extent by 5x (was 0.5)
-        const rangeX = 0.1; 
-        const rangeY = 0.1;
-        
-        // Parallax Offset
-        const offsetX = -dx * rangeX; 
-        const offsetY = -dy * rangeY;
-        
-        // Apply to camera local X/Y? Or World?
-        // Usually World X/Y matching the screen plane.
-        // Let's apply in Camera Local space (Left/Right, Up/Down)
-        
-        const parallax = new THREE.Vector3(offsetX, offsetY, 0);
-        parallax.applyQuaternion(camera.quaternion);
-        
-        camera.position.add(parallax);
-    }
-
-    renderer.render(scene, camera);
-}
-
+// Camera state
+let cameraBasePos = new THREE.Vector3();
 let isOverhead = false;
 let savedCameraPos = new THREE.Vector3();
 let savedCameraQuat = new THREE.Quaternion();
-let cameraBasePos = new THREE.Vector3(); // New Base
 
-export function toggleOverheadView() {
-    isOverhead = !isOverhead;
-    
-    if (isOverhead) {
-        // Save base, not current (which has parallax)
-        savedCameraPos.copy(cameraBasePos); 
-        savedCameraQuat.copy(camera.quaternion);
-        
-        camera.position.set(0, 3.5, 0.01);
-        camera.lookAt(0, 0, 0);
-        
-        // Sync base to overhead so controls don't snap back?
-        // No, disable controls in overhead? 
-        // For now, just set cameraBasePos to overhead pos to allow panning
-        cameraBasePos.copy(camera.position);
+// Controls
+export const keys = {
+  w: false,
+  a: false,
+  s: false,
+  d: false,
+  q: false,
+  e: false,
+  i: false,
+  j: false,
+  k: false,
+  l: false,
+  // Object manipulation
+  r: false,
+  y: false,
+  o: false,
+  p: false,
+  t: false,
+  f: false,
+  g: false,
+  h: false,
+  v: false,
+  b: false,
+  ",": false,
+  ".": false,
+  // Zoom
+  "[": false,
+  "]": false,
+  // Deselect
+  escape: false,
+};
+const moveSpeed = 2.0;
+const rotSpeed = 1.5;
+const zoomKeySpeed = 15.0; // FOV degrees per second for bracket zoom
 
-    } else {
-        // Restore
-        cameraBasePos.copy(savedCameraPos);
-        camera.position.copy(savedCameraPos);
-        camera.quaternion.copy(savedCameraQuat);
-    }
-    
-    return isOverhead;
+// Track whether an object is currently selected (set by objectControls)
+export let objectSelected = false;
+export function setObjectSelected(val) {
+  objectSelected = val;
 }
 
-export function updateCameraPose(role) {
-    currentRole = role;
-    updateVolumetricPose();
-    
-    if (isOverhead) return;
+let headTrackingEnabled = false;
 
-    if (role === 'w') {
-        initialCameraPos.set(0, 1.8, 2.0); 
-        initialCameraLookAt.set(0, 0.9, -0.4); 
-    } else if (role === 'b') {
-        initialCameraPos.set(0, 1.8, -2.0); 
-        initialCameraLookAt.set(0, 0.9, 0.4);
-    } else {
-        initialCameraPos.set(3.0, 3.0, 0);
-        initialCameraLookAt.set(0, 0.8, 0);
+export function setHeadTrackingEnabled(enabled) {
+  headTrackingEnabled = enabled;
+}
+
+export function setDepthThresholds(min, max) {
+  if (volumetricSplats && volumetricSplats.material) {
+    volumetricSplats.material.uniforms.minDepth.value = min;
+    volumetricSplats.material.uniforms.maxDepth.value = max;
+  }
+}
+
+// Create Volumetric Video as Dynamic Gaussian Splats (Instanced Quads)
+export function createCutout(videoElement) {
+  if (volumetricSplats) {
+    if (cutoutTexture.map.image !== videoElement) {
+      cutoutTexture.map.image = videoElement;
+      cutoutTexture.map.needsUpdate = true;
     }
-    
-    camera.position.copy(initialCameraPos);
-    camera.lookAt(initialCameraLookAt);
-    
-    // Sync Base
+    return;
+  }
+
+  const width = 252;
+  const height = 252;
+  const instanceCount = width * height;
+
+  const baseGeometry = new THREE.PlaneGeometry(1, 1);
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.index = baseGeometry.index;
+  geometry.attributes.position = baseGeometry.attributes.position;
+  geometry.attributes.uv = baseGeometry.attributes.uv;
+  geometry.instanceCount = instanceCount;
+
+  const texture = new THREE.VideoTexture(videoElement);
+  texture.format = THREE.RGBAFormat;
+  texture.colorSpace = THREE.SRGBColorSpace;
+
+  cutoutTexture = { map: texture };
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      map: { value: texture },
+      depthScale: { value: 1.0 },
+      minDepth: { value: 0.0 },
+      maxDepth: { value: 0.5 },
+      splatScale: { value: 0.015 },
+      unprojectScale: { value: 1.15 },
+      aspectRatio: { value: 1.0 },
+    },
+    vertexShader: `
+      uniform sampler2D map;
+      uniform float depthScale;
+      uniform float splatScale;
+      uniform float unprojectScale;
+
+      varying vec2 vUv;
+      varying vec2 vImgUv;
+      varying float vDepth;
+
+      const float width = 252.0;
+      const float height = 252.0;
+
+      void main() {
+        vUv = uv;
+
+        float gridX = mod(float(gl_InstanceID), width);
+        float gridY = floor(float(gl_InstanceID) / width);
+
+        vec2 gridUv = vec2((gridX + 0.5) / width, (gridY + 0.5) / height);
+        vImgUv = gridUv;
+
+        vec2 depthUv = vec2(gridUv.x * 0.5 + 0.5, gridUv.y);
+        float d = texture2D(map, depthUv).r;
+        vDepth = d;
+
+        float x = ((gridX / width) - 0.5) * unprojectScale;
+        float y = ((gridY / height) - 0.5) * unprojectScale;
+
+        vec3 centerPos = vec3(x, y, 0.0);
+        centerPos.z += d * depthScale;
+
+        vec4 mvPosition = modelViewMatrix * vec4(centerPos, 1.0);
+        vec2 scale = vec2(splatScale);
+        mvPosition.xy += position.xy * scale;
+
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D map;
+      uniform float minDepth;
+      uniform float maxDepth;
+
+      varying vec2 vUv;
+      varying vec2 vImgUv;
+      varying float vDepth;
+
+      void main() {
+        if (vDepth < minDepth || vDepth > maxDepth) discard;
+
+        vec2 center = vUv - 0.5;
+        float distSq = dot(center, center);
+        float alpha = exp(-distSq * 10.0);
+
+        if (alpha < 0.01) discard;
+
+        vec2 colorUv = vec2(vImgUv.x * 0.5, vImgUv.y);
+        vec4 color = texture2D(map, colorUv);
+
+        gl_FragColor = vec4(color.rgb, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending,
+    side: THREE.DoubleSide,
+  });
+
+  volumetricSplats = new THREE.InstancedMesh(geometry, material, instanceCount);
+  volumetricSplats.frustumCulled = false;
+  volumetricSplats.renderOrder = 999;
+
+  scene.add(volumetricSplats);
+  updateVolumetricPose();
+}
+
+function updateVolumetricPose() {
+  if (!volumetricSplats) return;
+
+  const dist = 0.55;
+  const height = 0.95;
+
+  volumetricSplats.scale.set(0.65, 0.65, 0.65);
+
+  if (currentRole === "w") {
+    volumetricSplats.position.set(0, height, -dist);
+    volumetricSplats.lookAt(0, height, dist);
+  } else if (currentRole === "b") {
+    volumetricSplats.position.set(0, height, dist);
+    volumetricSplats.lookAt(0, height, -dist);
+  }
+  volumetricSplats.rotation.y += Math.PI;
+}
+
+export function setupControls(dom) {
+  if (!dom) return;
+
+  window.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (keys.hasOwnProperty(k)) keys[k] = true;
+  });
+  window.addEventListener("keyup", (e) => {
+    const k = e.key.toLowerCase();
+    if (keys.hasOwnProperty(k)) keys[k] = false;
+  });
+
+  // Zoom (Wheel) -> Camera FOV
+  dom.addEventListener(
+    "wheel",
+    (e) => {
+      e.preventDefault();
+      const zoomSpeed = 0.05;
+      camera.fov += e.deltaY * zoomSpeed;
+      camera.fov = Math.max(5, Math.min(100, camera.fov));
+      camera.updateProjectionMatrix();
+    },
+    { passive: false },
+  );
+
+  dom.addEventListener("contextmenu", (e) => e.preventDefault());
+}
+
+export function animateScene(time) {
+  const dt = clock.getDelta();
+
+  // 1. WASD + QE -> Camera movement (only when no object selected, or always for WASD)
+  const move = new THREE.Vector3();
+  if (keys.w) move.z -= 1;
+  if (keys.s) move.z += 1;
+  if (keys.a) move.x -= 1;
+  if (keys.d) move.x += 1;
+  if (keys.q) move.y -= 1;
+  if (keys.e) move.y += 1;
+
+  if (move.lengthSq() > 0) {
+    move.normalize().multiplyScalar(moveSpeed * dt);
+    move.applyQuaternion(camera.quaternion);
+    cameraBasePos.add(move);
+  }
+
+  // Bracket zoom: [ = zoom out (increase FOV), ] = zoom in (decrease FOV)
+  if (keys["["]) {
+    camera.fov = Math.min(100, camera.fov + zoomKeySpeed * dt);
+    camera.updateProjectionMatrix();
+  }
+  if (keys["]"]) {
+    camera.fov = Math.max(5, camera.fov - zoomKeySpeed * dt);
+    camera.updateProjectionMatrix();
+  }
+
+  // 2. IJKL -> Camera rotation
+  if (keys.j) camera.rotation.y += rotSpeed * dt;
+  if (keys.l) camera.rotation.y -= rotSpeed * dt;
+  if (keys.i) camera.rotation.x += rotSpeed * dt;
+  if (keys.k) camera.rotation.x -= rotSpeed * dt;
+
+  // Reset camera to base before applying parallax
+  camera.position.copy(cameraBasePos);
+
+  // 3. Head Tracking Parallax
+  if (
+    headTrackingEnabled &&
+    trackingState &&
+    trackingState.headPose &&
+    trackingState.headPose.faceLandmarks &&
+    trackingState.headPose.faceLandmarks.length > 0
+  ) {
+    const face = trackingState.headPose.faceLandmarks[0];
+    const nose = face[1];
+
+    const dx = (nose.x - 0.5) * 2.0;
+    const dy = (nose.y - 0.5) * 2.0;
+
+    const rangeX = 0.1;
+    const rangeY = 0.1;
+
+    const offsetX = -dx * rangeX;
+    const offsetY = -dy * rangeY;
+
+    const parallax = new THREE.Vector3(offsetX, offsetY, 0);
+    parallax.applyQuaternion(camera.quaternion);
+    camera.position.add(parallax);
+  }
+
+  renderer.render(scene, camera);
+}
+
+export function toggleOverheadView() {
+  isOverhead = !isOverhead;
+
+  if (isOverhead) {
+    savedCameraPos.copy(cameraBasePos);
+    savedCameraQuat.copy(camera.quaternion);
+
+    camera.position.set(0, 4, 0.01);
+    camera.lookAt(0, 0, 0);
     cameraBasePos.copy(camera.position);
+  } else {
+    cameraBasePos.copy(savedCameraPos);
+    camera.position.copy(savedCameraPos);
+    camera.quaternion.copy(savedCameraQuat);
+  }
+
+  return isOverhead;
+}
+
+// Random spawn offset for multi-user (seeded once per session)
+const spawnOffsetX = (Math.random() - 0.5) * 3.0;
+const spawnOffsetZ = (Math.random() - 0.5) * 1.0;
+
+export function updateCameraPose(role) {
+  currentRole = role;
+  updateVolumetricPose();
+
+  if (isOverhead) return;
+
+  camera.fov = 50;
+  camera.updateProjectionMatrix();
+
+  if (role === "w") {
+    camera.position.set(spawnOffsetX, 1.5, 2.5 + spawnOffsetZ);
+    camera.lookAt(0, 1.0, 0);
+  } else if (role === "b") {
+    camera.position.set(spawnOffsetX, 1.5, -2.5 + spawnOffsetZ);
+    camera.lookAt(0, 1.0, 0);
+  } else {
+    camera.position.set(2.5 + spawnOffsetX, 2.5, spawnOffsetZ);
+    camera.lookAt(0, 1.0, 0);
+  }
+
+  cameraBasePos.copy(camera.position);
 }
 
 export async function initScene() {
-    clock = new THREE.Clock();
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x202020);
-    scene.fog = new THREE.FogExp2(0x202020, 0.1);
+  clock = new THREE.Clock();
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111118);
 
-    // Zolly: Half FOV (38 -> 19)
-    camera = new THREE.PerspectiveCamera(19, window.innerWidth / window.innerHeight, 0.1, 100);
-    camera.position.set(0, 2.4, 1.6); 
-    camera.lookAt(0, 0, -0.5);
-    cameraBasePos.copy(camera.position);
+  camera = new THREE.PerspectiveCamera(
+    50,
+    window.innerWidth / window.innerHeight,
+    0.05,
+    200,
+  );
+  camera.position.set(0, 1.5, 2.5);
+  camera.lookAt(0, 1.0, 0);
+  cameraBasePos.copy(camera.position);
 
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap; 
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    document.getElementById('app').appendChild(renderer.domElement);
+  renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: true,
+    powerPreference: "high-performance",
+  });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));  // cap for perf
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.BasicShadowMap;  // cheapest shadow type
+  // NOTE: tone mapping and color space are set by hdr.js loadEnvironment()
+  document.getElementById("app").appendChild(renderer.domElement);
 
-    // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
-    scene.add(ambientLight);
+  // Lighting
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+  scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
-    dirLight.position.set(2, 4, 3);
-    scene.add(dirLight);
-    
-    // Warm Spot
-    const spotLight = new THREE.SpotLight(0xffd6aa, 15); 
-    spotLight.position.set(0, 3, 0);
-    spotLight.angle = Math.PI / 3;
-    spotLight.penumbra = 0.5; 
-    spotLight.distance = 10;
-    spotLight.castShadow = true;
-    spotLight.shadow.mapSize.width = 1024;
-    spotLight.shadow.mapSize.height = 1024;
-    spotLight.shadow.radius = 4; 
-    spotLight.shadow.bias = -0.0001; 
-    
-    spotLight.target.position.set(0, 0, 0); 
-    scene.add(spotLight.target);
-    scene.add(spotLight);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+  dirLight.position.set(3, 5, 2);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 512;
+  dirLight.shadow.mapSize.height = 512;
+  scene.add(dirLight);
 
-    // Load Assets
-    await loadModels();
+  // Subtle warm spot from above
+  const spotLight = new THREE.SpotLight(0xffd6aa, 8);
+  spotLight.position.set(0, 4, 0);
+  spotLight.angle = Math.PI / 2.5;
+  spotLight.penumbra = 0.8;
+  spotLight.distance = 12;
+  spotLight.castShadow = true;
+  spotLight.shadow.radius = 4;
+  spotLight.shadow.bias = -0.0001;
+  spotLight.target.position.set(0, 0, 0);
+  scene.add(spotLight.target);
+  scene.add(spotLight);
 
-    window.addEventListener('resize', onWindowResize, false);
+  // Ground plane with subtle reflections — aligned with physics ground at y=0
+  const groundGeo = new THREE.PlaneGeometry(40, 40);
+  const groundMat = new THREE.MeshPhysicalMaterial({
+    color: 0x1a1a22,
+    metalness: 0.1,
+    roughness: 0.12,
+    envMapIntensity: 0.6,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0;
+  ground.receiveShadow = true;
+  ground.name = '_ground';
+  scene.add(ground);
 
-    // Load Assets
-    await loadModels();
+  // Grid helper for spatial reference
+  const grid = new THREE.GridHelper(10, 40, 0x333344, 0x222233);
+  grid.position.y = 0.001;
+  grid.material.transparent = true;
+  grid.material.opacity = 0.35;
+  scene.add(grid);
 
-    window.addEventListener('resize', onWindowResize, false);
+  window.addEventListener("resize", onWindowResize, false);
+  setupControls(renderer.domElement);
 
-    // Call new Controls
-    setupControls(renderer.domElement);
-
-    scene.add(highlightGroup); // Add interaction layer
-
-    return {
-        scene,
-        camera,
-        renderer,
-        boardGroup,
-        piecesGroup,
-        interactables,
-        createCutout,
-        updateBoard
-    };
-}
-
-// Global splats for tuning
-let splatWhite = null;
-let splatBlack = null;
-let activeSplat = null; // The one currently being tuned
-
-async function loadModels() {
-    console.log("Loading Environments (Splats)...");
-    
-    const loadSplat = async (filename, isWhite) => {
-        const path = `${import.meta.env.BASE_URL}assets/${filename}`;
-        try {
-            const splatData = await splatLoader.loadAsync(path);
-            const splat = new SplatMesh({ packedSplats: splatData });
-             if (splat && splat.isObject3D) {
-                scene.add(splat);
-                splat.rotation.order = 'YXZ'; 
-                
-                // User Tuned Values for White
-                // Rot: X=163.3, Y=198.9 -> Rads
-                // Pos: -0.415, 0.948, 2.115
-                
-                const d2r = Math.PI / 180;
-                const scale = 0.375 * 2.5;
-                splat.scale.set(scale, scale, scale);
-
-                if (isWhite) {
-                    splat.rotation.x = 163.3 * d2r;
-                    splat.rotation.y = 198.9 * d2r;
-                    splat.rotation.z = 0;
-                    
-                    splat.position.set(-0.415, 0.948, 2.115);
-                    splatWhite = splat;
-                    activeSplat = splat; // Default to white for tuning
-                } else {
-                    // Mirror for Black
-                    // Flip Z position. Flip X position?
-                    // Rotate Y by 180 (198.9 - 180 = 18.9)
-                    
-                    splat.rotation.x = 163.3 * d2r;
-                    splat.rotation.y = (198.9 - 180) * d2r;
-                    splat.rotation.z = 0;
-                    
-                    // Mirror Position (Assuming symmetry around 0,0)
-                    splat.position.set(0.415, 0.948, -2.115);
-                    splatBlack = splat;
-                }
-                
-                console.log(`Splat ${isWhite?'White':'Black'} Loaded`, splat.position);
-             }
-        } catch(e) {
-            console.error(`Failed to load ${filename}:`, e);
-        }
-    };
-
-    await loadSplat('white_view.splat', true);
-    await loadSplat('black_view.splat', false);
-    
-    // Assign envSplat to active for compatibility with existing loop if needed
-    // But better to update animateScene to use activeSplat
-    envSplat = activeSplat; 
-
-    
-    // --- FURNITURE ---
-    try {
-        const table = await new Promise((resolve, reject) => loader.load(`${import.meta.env.BASE_URL}assets/table_with_chairs.glb`, resolve, undefined, reject));
-        table.scene.traverse(c => { 
-            if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; }
-            // Push chairs back
-            if (c.name.toLowerCase().includes('chair')) {
-                // Determine direction based on Z
-                if (c.position.z > 0.1) c.position.z += 0.4;
-                else if (c.position.z < -0.1) c.position.z -= 0.4;
-            }
-        });
-        scene.add(table.scene);
-        console.log("Table Loaded");
-    } catch(e) { console.warn("Failed to load table:", e); }
-
-    // --- BOARD ---
-    boardGroup.clear();
-    const boardY = 0.776; 
-    
-    boardGroup.position.set(0, boardY, 0);
-    scene.add(boardGroup);
-    
-    const squareSize = 0.05996;
-    const boardGeo = new THREE.BoxGeometry(squareSize, 0.01, squareSize);
-    const whiteMat = new THREE.MeshPhysicalMaterial({ color: 0xeecd9c, roughness: 0.5 });
-    const blackMat = new THREE.MeshPhysicalMaterial({ color: 0x8b5a2b, roughness: 0.5 });
-    
-    for (let x = 0; x < 8; x++) {
-        for (let z = 0; z < 8; z++) {
-            const isWhite = (x + z) % 2 === 0;
-            const square = new THREE.Mesh(boardGeo, isWhite ? whiteMat : blackMat);
-            square.position.set((x - 3.5) * squareSize, 0, (z - 3.5) * squareSize);
-            boardGroup.add(square);
-        }
-    }
-    
-    piecesGroup.position.y = boardY + 0.01;
-    scene.add(piecesGroup);
-}
-
-// Map piece names
-const pieceMap = {
-    'p': 'Pawn_black', 'n': 'Knight_black', 'b': 'Bishop_black', 'r': 'Castle_black', 'q': 'Queen_black', 'k': 'King_black',
-    'P': 'Pawn_white', 'N': 'Knight_white', 'B': 'Bishop_white', 'R': 'Castle_white', 'Q': 'Queen_white', 'K': 'King_white'
-};
-
-const pieceMeshes = {}; 
-
-async function loadPieces() {
-    const variants = [
-        'Bishop_black', 'Bishop_white', 'Castle_black', 'Castle_white',
-        'King_black', 'King_white', 'Knight_black', 'Knight_white',
-        'Pawn_black', 'Pawn_white', 'Queen_black', 'Queen_white'
-    ];
-    
-    for (const name of variants) {
-        try {
-            const gltf = await new Promise((resolve, reject) => loader.load(`${import.meta.env.BASE_URL}assets/${name}.glb`, resolve, undefined, reject));
-            gltf.scene.traverse(c => {
-                if(c.isMesh) {
-                    c.castShadow = true;
-                    c.receiveShadow = true;
-                    // Ensure material is PBR
-                     if (c.material) {
-                        const old = c.material;
-                        c.material = new THREE.MeshPhysicalMaterial({
-                            map: old.map, color: old.color, roughness: 0.5, metalness: 0.1
-                        });
-                     }
-                }
-            });
-            pieceMeshes[name] = gltf.scene;
-        } catch(e) {
-            console.error(`Failed piece: ${name}`, e);
-        }
-    }
-}
-
-export async function updateBoard(fen) {
-    piecesGroup.clear();
-    
-    if (Object.keys(pieceMeshes).length === 0) {
-        await loadPieces();
-    }
-    
-    const rows = fen.split(' ')[0].split('/');
-    const squareSize = 0.05996; 
-
-    rows.forEach((row, rowIndex) => {
-        let colIndex = 0;
-        for (const char of row) {
-            if (!isNaN(char)) {
-                colIndex += parseInt(char);
-            } else {
-                const pieceName = pieceMap[char];
-                if (pieceName && pieceMeshes[pieceName]) {
-                    const instance = pieceMeshes[pieceName].clone();
-                    
-                    const x = (colIndex - 3.5) * squareSize;
-                    const z = (rowIndex - 3.5) * squareSize;
-                    
-                    instance.position.set(x, 0, z);
-
-                    if (char === char.toUpperCase()) {
-                        instance.rotation.y = Math.PI;
-                    }
-                    
-                    instance.userData = { 
-                        tile: String.fromCharCode(97 + colIndex) + (8 - rowIndex),
-                        color: (char === char.toUpperCase()) ? 'w' : 'b'
-                    };
-                    
-                    piecesGroup.add(instance);
-                    interactables.push(instance);
-                }
-                colIndex++;
-            }
-        }
-    });
+  return {
+    scene,
+    camera,
+    renderer,
+    createCutout,
+  };
 }
 
 function onWindowResize() {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
 }

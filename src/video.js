@@ -5,7 +5,7 @@ let localStream = null;
 let onAppMessageCallback = null;
 let onRemoteVideoCallback = null;
 
-const ROOM_URL = "https://vcroom.daily.co/chess"; 
+const ROOM_URL = "https://vcroom.daily.co/airdraw"; 
 
 export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {}) {
     console.log("Initializing Daily.co...");
@@ -111,6 +111,10 @@ export function sendMove(from, to) {
     if (callObject) {
         callObject.sendAppMessage({ type: 'move', from, to });
     }
+}
+
+export function getCallObject() {
+    return callObject;
 }
 
 function updateLocalVideo(p) {
