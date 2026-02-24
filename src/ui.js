@@ -2,6 +2,7 @@ import { toggleAudio, toggleVideo, getDevices, setInputDevice } from './video.js
 import { setHeadTrackingEnabled } from './scene.js';
 import { setVisionHeadTracking, setVisionHandTracking } from './vision.js';
 import { PALETTE, PALETTE_MATERIALS } from './drawing.js';
+import { setWebcamReflectionEnabled } from './hdr.js';
 
 let drawerRef = null;
 let physicsRef = null;
@@ -46,6 +47,7 @@ export class CallUI {
     this.sceneTreePanel = document.getElementById('scene-tree-panel');
     this.sceneTreeList = document.getElementById('scene-tree-list');
     this.quatBallBtn = document.getElementById('btn-quat-ball');
+    this.reflectionBtn = document.getElementById('btn-reflection');
 
     this.isMicOn = true;
     this.isCamOn = true;
@@ -56,6 +58,7 @@ export class CallUI {
     this.isPhysicsOn = true;
     this.isGravityOn = true;
     this.isSceneTreeOpen = false;
+    this.isReflectionOn = false;
     this.selectedColor = PALETTE[0];
 
     this.buildColorPalette();
@@ -63,6 +66,8 @@ export class CallUI {
 
     // Head tracking off by default — dim the button
     if (this.headBtn) this.headBtn.style.opacity = '0.4';
+    // Webcam reflection off by default — dim the button
+    if (this.reflectionBtn) this.reflectionBtn.style.opacity = '0.4';
   // Hand tracking on by default — bright
 
     // Refresh scene tree periodically
@@ -306,6 +311,15 @@ export class CallUI {
           return;
         }
         quatBallRef.toggle(selected);
+      });
+    }
+
+    // Webcam reflection toggle
+    if (this.reflectionBtn) {
+      this.reflectionBtn.addEventListener('click', () => {
+        this.isReflectionOn = !this.isReflectionOn;
+        setWebcamReflectionEnabled(this.isReflectionOn);
+        this.reflectionBtn.style.opacity = this.isReflectionOn ? '1' : '0.4';
       });
     }
 

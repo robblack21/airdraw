@@ -7,6 +7,11 @@ let callObject = null;
 let isHost = true;  // All clients are host by default; auto-demote on receiving physics:sync
 let physicsSyncRAF = null;
 
+// Peer camera poses for spatial presence
+const peerPoses = new Map(); // peerId -> { pos: [x,y,z], rot: [x,y,z,w] }
+let lastPoseBroadcast = 0;
+const POSE_BROADCAST_INTERVAL = 100; // ms, ~10fps
+
 export class DrawingSync {
   constructor() {
     // Remote physics lerp targets (for smooth interpolation)
@@ -78,6 +83,26 @@ export class DrawingSync {
     this.broadcast({ type: 'stroke:clear' });
   }
 
+  // Broadcast local camera position + rotation (~10fps throttled)
+  broadcastUserPose(position, rotation) {
+    const now = performance.now();
+    if (now - lastPoseBroadcast < POSE_BROADCAST_INTERVAL) return;
+    lastPoseBroadcast = now;
+    this.broadcast({
+      type: 'user:pose',
+      pos: [position.x, position.y, position.z],
+      rot: [rotation.x, rotation.y, rotation.z, rotation.w]
+    });
+  }
+
+  getPeerPoses() {
+    return peerPoses;
+  }
+
+  removePeer(peerId) {
+    peerPoses.delete(peerId);
+  }
+
   // Broadcast a toggle state change (physics, gravity, etc.)
   broadcastToggle(toggleType, enabled) {
     this.broadcast({ type: `toggle:${toggleType}`, enabled });
@@ -133,7 +158,7 @@ export class DrawingSync {
   }
 
   // Handle incoming app-message from Daily.co
-  handleMessage(data, drawer, physics) {
+  handleMessage(data, drawer, physics, fromId) {
     if (!data || !data.type) return;
 
     switch (data.type) {
@@ -227,6 +252,12 @@ export class DrawingSync {
 
       case 'toggle:gravity':
         if (physics) physics.setGravityEnabled(data.enabled);
+        break;
+
+      case 'user:pose':
+        if (data.pos && data.rot && fromId) {
+          peerPoses.set(fromId, { pos: data.pos, rot: data.rot });
+        }
         break;
     }
   }

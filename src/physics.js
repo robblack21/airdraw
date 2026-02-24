@@ -56,8 +56,8 @@ export class PhysicsWorld {
           .setTranslation(center[0], center[1], center[2])
       : RAPIER.RigidBodyDesc.dynamic()
           .setTranslation(center[0], center[1], center[2])
-          .setLinearDamping(5.0)
-          .setAngularDamping(4.0)
+          .setLinearDamping(1.5)
+          .setAngularDamping(1.5)
           .setCcdEnabled(true);
 
     if (rotation) {
@@ -77,7 +77,7 @@ export class PhysicsWorld {
           .setTranslation(Math.cos(angle) * radius, Math.sin(angle) * radius, 0)
           .setRestitution(0.0)
           .setFriction(0.3)
-          .setDensity(15.0)
+          .setDensity(5.0)
           .setCollisionGroups(ringGroup),
         body
       );
@@ -238,15 +238,15 @@ export class PhysicsWorld {
     }
   }
 
-  applyPalmForce(palmWorldPos, magnitude = 8.0) {
+  applyPalmForce(palmWorldPos, magnitude = 15.0) {
     if (!this.world || !this.enabled) return;
     for (const [, entry] of this.bodies) {
       if (entry.isFirst) continue;
       const p = entry.body.translation();
       const dx = p.x-palmWorldPos.x, dy = p.y-palmWorldPos.y, dz = p.z-palmWorldPos.z;
       const dist = Math.sqrt(dx*dx+dy*dy+dz*dz);
-      if (dist < 1.5 && dist > 0.01) {
-        const f = magnitude * (1-dist/1.5) * (1-dist/1.5);
+      if (dist < 2.5 && dist > 0.01) {
+        const f = magnitude * (1-dist/2.5) * (1-dist/2.5);
         entry.body.applyImpulse({ x: dx/dist*f, y: dy/dist*f, z: dz/dist*f }, true);
         entry.body.wakeUp();
       }

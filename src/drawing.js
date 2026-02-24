@@ -45,14 +45,18 @@ export class StrokeRecorder {
     this.drawDepth = 1.5;
     this.tubeRadius = 0.024;
     this.tubeSegments = 12;
-    this.minPointDistance = 0.012;
+    this.minPointDistance = 0.01;
     this.color = new THREE.Color(PALETTE[0]);
     this.colorHex = PALETTE[0];
     this.activeStrokeId = null;
 
     // Smoothing: exponential moving average
     this._smoothPos = null;
-    this._smoothAlpha = 0.35; // lower = smoother, higher = more responsive
+    this._smoothAlpha = 0.5; // lower = smoother, higher = more responsive
+    this._activeMaterial = null; // cached material for active stroke
+    this._activeRadialSegments = 8; // reasonable cross-section during drawing
+    this._rebuildEveryN = 3; // only rebuild geometry every Nth point
+    this._pointsSinceRebuild = 0;
   }
 
   setColor(hex) {
@@ -145,6 +149,8 @@ export class StrokeRecorder {
     this.activePoints = [point.clone()];
     this.activeStrokeId = crypto.randomUUID();
     this._smoothPos = point.clone();
+    this._activeMaterial = null; // fresh material for new stroke
+    this._pointsSinceRebuild = 0;
   }
 
   continueStroke(point) {
@@ -152,7 +158,13 @@ export class StrokeRecorder {
     if (point.distanceTo(last) < this.minPointDistance) return false;
 
     this.activePoints.push(point.clone());
-    this.rebuildActiveMesh();
+    this._pointsSinceRebuild++;
+
+    // Throttle geometry rebuilds — only every Nth point (still adds point for final curve)
+    if (this._pointsSinceRebuild >= this._rebuildEveryN || this.activePoints.length <= 4) {
+      this._pointsSinceRebuild = 0;
+      this.rebuildActiveMesh();
+    }
     return true;
   }
 
@@ -245,6 +257,20 @@ export class StrokeRecorder {
       this.scene.add(this.activeMesh);
     }
 
+    // Full-quality rebuild for non-ring strokes (upgrade from low-LOD active drawing)
+    if (!isRing && this.activeMesh && this.activePoints.length >= 2) {
+      const oldGeo = this.activeMesh.geometry;
+      const curve = new THREE.CatmullRomCurve3(this.activePoints);
+      curve.curveType = 'catmullrom';
+      curve.tension = 0.5;
+      const segs = Math.max(this.activePoints.length * 3, 16);
+      const finalGeo = new THREE.TubeGeometry(
+        curve, segs, this.tubeRadius, this.tubeSegments, false
+      );
+      this.activeMesh.geometry = finalGeo;
+      oldGeo.dispose();
+    }
+
     const stroke = {
       mesh: this.activeMesh,
       points: this.activePoints.map(p => [p.x, p.y, p.z]),
@@ -258,6 +284,7 @@ export class StrokeRecorder {
     this.completedStrokes.push(stroke);
     this.activeMesh = null;
     this.activePoints = [];
+    this._activeMaterial = null;
     const id = this.activeStrokeId;
     this.activeStrokeId = null;
 
@@ -267,30 +294,27 @@ export class StrokeRecorder {
   rebuildActiveMesh() {
     if (this.activePoints.length < 2) return;
 
-    if (this.activeMesh) {
-      this.scene.remove(this.activeMesh);
-      this.activeMesh.geometry.dispose();
-    }
-
     const curve = new THREE.CatmullRomCurve3(this.activePoints);
     curve.curveType = 'catmullrom';
     curve.tension = 0.5;
-    const segments = Math.max(this.activePoints.length * 3, 16);
+    const segments = Math.min(Math.max(this.activePoints.length * 2, 16), 120);
     const geometry = new THREE.TubeGeometry(
-      curve,
-      segments,
-      this.tubeRadius,
-      this.tubeSegments,
-      false
+      curve, segments, this.tubeRadius, this._activeRadialSegments, false
     );
 
     if (!this.activeMesh) {
-      this.activeMesh = new THREE.Mesh(geometry, this._makeMaterial());
+      // Create material once per stroke and cache it
+      if (!this._activeMaterial) {
+        this._activeMaterial = this._makeMaterial();
+      }
+      this.activeMesh = new THREE.Mesh(geometry, this._activeMaterial);
+      this.scene.add(this.activeMesh); // add to scene only once
     } else {
+      // Swap geometry in place — no remove/add, no flicker
+      const oldGeo = this.activeMesh.geometry;
       this.activeMesh.geometry = geometry;
+      oldGeo.dispose();
     }
-
-    this.scene.add(this.activeMesh);
   }
 
   // Remote stroke from network
@@ -334,14 +358,11 @@ export class StrokeRecorder {
     remote.points.push(new THREE.Vector3(point[0], point[1], point[2]));
     if (remote.points.length < 2) return;
 
-    if (remote.mesh) {
-      this.scene.remove(remote.mesh);
-      remote.mesh.geometry.dispose();
-    }
-
     const curve = new THREE.CatmullRomCurve3(remote.points);
-    const segments = Math.max(remote.points.length * 3, 16);
-    const geometry = new THREE.TubeGeometry(curve, segments, remote.radius || this.tubeRadius, this.tubeSegments, false);
+    curve.curveType = 'catmullrom';
+    curve.tension = 0.5;
+    const segments = Math.min(Math.max(remote.points.length * 2, 16), 120);
+    const geometry = new THREE.TubeGeometry(curve, segments, remote.radius || this.tubeRadius, this._activeRadialSegments, false);
 
     if (!remote.mesh) {
       const material = new THREE.MeshPhysicalMaterial({
@@ -355,11 +376,13 @@ export class StrokeRecorder {
         opacity: 0.7
       });
       remote.mesh = new THREE.Mesh(geometry, material);
+      this.scene.add(remote.mesh); // add to scene only once
     } else {
+      // Swap geometry in place — no flicker
+      const oldGeo = remote.mesh.geometry;
       remote.mesh.geometry = geometry;
+      oldGeo.dispose();
     }
-
-    this.scene.add(remote.mesh);
   }
 
   cancelRemoteActiveStroke(strokeId) {
@@ -405,7 +428,7 @@ export class StrokeRecorder {
     this.remoteStrokes.clear();
   }
 
-  addPrimitive(type, position, scale = 0.15) {
+  addPrimitive(type, position, scale = 1.5) {
     let geometry;
     switch (type) {
       case 'cube':

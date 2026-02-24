@@ -11,6 +11,11 @@ let cubeCamera = null;
 let cubeRenderTarget = null;
 let reflectionScene = null;
 let frameCounter = 0;
+let webcamReflectionEnabled = false;
+
+export function setWebcamReflectionEnabled(val) {
+  webcamReflectionEnabled = val;
+}
 
 export async function loadEnvironment(scene, renderer) {
   const pmremGenerator = new THREE.PMREMGenerator(renderer);
@@ -131,6 +136,14 @@ function setupWebcamReflection() {
  */
 export function updateWebcamReflection(videoEl, renderer, scene) {
   if (!cubeCamera || !cubeRenderTarget || !reflectionScene) return;
+
+  // When disabled, restore the base HDR environment and skip
+  if (!webcamReflectionEnabled) {
+    if (baseEnvMap && scene.environment !== baseEnvMap) {
+      scene.environment = baseEnvMap;
+    }
+    return;
+  }
 
   frameCounter++;
   if (frameCounter % 6 !== 0) return;

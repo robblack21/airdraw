@@ -12,7 +12,7 @@
         overflow: hidden;
         background: #000;
         color: white;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       #app {
         width: 100vw;
@@ -40,7 +40,7 @@
         z-index: 1000;
         text-align: center;
         backdrop-filter: blur(20px);
-        border: 1px solid rgba(255,255,255,0.1);
+        border: 1px solid rgba(255, 255, 255, 0.1);
       }
       #loading-details {
         font-size: 14px;
@@ -58,12 +58,12 @@
         left: 50%;
         transform: translateX(-50%);
         padding: 8px 20px;
-        background: rgba(0,0,0,0.6);
+        background: rgba(0, 0, 0, 0.6);
         border-radius: 20px;
         font-size: 14px;
         pointer-events: none;
         backdrop-filter: blur(10px);
-        border: 1px solid rgba(255,255,255,0.15);
+        border: 1px solid rgba(255, 255, 255, 0.15);
         opacity: 0;
         transition: opacity 0.3s;
       }
@@ -76,7 +76,7 @@
         width: 24px;
         height: 24px;
         border-radius: 50%;
-        border: 2px solid rgba(255,255,255,0.5);
+        border: 2px solid rgba(255, 255, 255, 0.5);
         display: inline-block;
         vertical-align: middle;
         cursor: pointer;
@@ -113,11 +113,11 @@
         justify-content: center;
       }
       #call-controls button:hover {
-        background: rgba(255,255,255,0.1);
+        background: rgba(255, 255, 255, 0.1);
       }
       .ctrl-divider {
         width: 1px;
-        background: rgba(255,255,255,0.15);
+        background: rgba(255, 255, 255, 0.15);
         margin: 4px 2px;
       }
 
@@ -127,10 +127,10 @@
         bottom: 80px;
         left: 50%;
         transform: translateX(-50%);
-        background: rgba(0,0,0,0.85);
+        background: rgba(0, 0, 0, 0.85);
         padding: 15px;
         border-radius: 12px;
-        border: 1px solid rgba(255,255,255,0.15);
+        border: 1px solid rgba(255, 255, 255, 0.15);
         backdrop-filter: blur(20px);
         z-index: 2000;
         display: flex;
@@ -160,10 +160,10 @@
         bottom: 80px;
         left: 50%;
         transform: translateX(-50%);
-        background: rgba(0,0,0,0.85);
+        background: rgba(0, 0, 0, 0.85);
         padding: 12px;
         border-radius: 12px;
-        border: 1px solid rgba(255,255,255,0.15);
+        border: 1px solid rgba(255, 255, 255, 0.15);
         backdrop-filter: blur(20px);
         z-index: 2000;
         display: flex;
@@ -178,13 +178,53 @@
         border-radius: 50%;
         cursor: pointer;
         border: 2px solid transparent;
-        transition: border-color 0.2s, transform 0.15s;
+        transition:
+          border-color 0.2s,
+          transform 0.15s;
       }
       .color-swatch:hover {
         transform: scale(1.15);
       }
       .color-swatch.selected {
         border-color: white;
+      }
+
+      /* Scene tree panel */
+      #scene-tree-panel {
+        position: absolute;
+        top: 80px;
+        right: 16px;
+        width: 220px;
+        background: rgba(0,0,0,0.82);
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.12);
+        backdrop-filter: blur(20px);
+        z-index: 2000;
+        pointer-events: auto;
+      }
+      .scene-tree-item {
+        padding: 6px 8px;
+        margin: 2px 0;
+        font-size: 12px;
+        color: #bbb;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .scene-tree-item:hover {
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+      }
+      .scene-tree-item.selected {
+        background: rgba(100,160,255,0.18);
+        color: #6af;
+      }
+      .scene-tree-icon {
+        font-size: 14px;
       }
     </style>
     <script type="importmap">
@@ -196,13 +236,27 @@
         }
       }
     </script>
-    <script type="module" crossorigin src="/assets/index-B3lftVxq.js"></script>
+    <script type="module" crossorigin src="/assets/index-JSVldqND.js"></script>
   </head>
   <body>
     <div id="loading">
       <div>AirDraw</div>
       <div id="loading-details"></div>
-      <button id="start-btn" class="hidden" style="background: #333; color: white; border: 1px solid #555; padding: 8px 16px; cursor: pointer; border-radius: 4px; margin-top: 10px;">Enter Room</button>
+      <button
+        id="start-btn"
+        class="hidden"
+        style="
+          background: #333;
+          color: white;
+          border: 1px solid #555;
+          padding: 8px 16px;
+          cursor: pointer;
+          border-radius: 4px;
+          margin-top: 10px;
+        "
+      >
+        Enter Room
+      </button>
     </div>
     <div id="app"></div>
     <div id="ui"></div>
@@ -210,77 +264,94 @@
     <!-- Drawing state indicator -->
     <div id="draw-indicator">Pinch to draw</div>
 
-    <!-- WebGPU Depth Estimation Library Elements -->
-    <div id="depth-library-container" style="opacity: 0; position: fixed; pointer-events: none; z-index: -1;">
-        <div id="container">
-            <video id="video" autoplay muted playsinline></video>
-            <canvas id="output-canvas"></canvas>
-        </div>
-        <label id="status">Loading model...</label>
-    </div>
-
-    <!-- Depth quality controls (hidden) -->
-    <div id="controls" style="display: none;">
-        <div>
-            <label>Quality</label> <span id="size-value">224</span>px
-            <input id="size" type="range" min="140" max="840" step="14" value="224" disabled>
-        </div>
-        <div>
-            <label>Scale</label>
-            (<label id="scale-value">1.0</label>)
-            <input id="scale" type="range" min="0.1" max="1" step="0.1" value="1.0" disabled>
-        </div>
-        <div>
-            <label>Far Clip</label> <span id="min-depth-val">0.00</span>
-            <input id="min-depth" type="range" min="0" max="1" step="0.01" value="0.00">
-        </div>
-        <div>
-            <label>Near Clip</label> <span id="max-depth-val">0.50</span>
-            <input id="max-depth" type="range" min="0" max="1" step="0.01" value="0.50">
-        </div>
-    </div>
+    <!-- Hidden webcam video element (used by hand tracking + video call) -->
+    <video id="video" style="display:none" autoplay muted playsinline></video>
 
     <!-- Call Controls -->
     <div id="call-controls">
-        <button id="btn-mic" title="Toggle Microphone">🎤</button>
-        <button id="btn-cam" title="Toggle Camera">📷</button>
-        <button id="btn-head" title="Toggle Head Tracking">😎</button>
-        <div class="ctrl-divider"></div>
-        <button id="btn-color" title="Color Palette"><span id="color-preview" style="background: #c0c0c0;"></span></button>
-        <button id="btn-undo" title="Undo Last Stroke">↩</button>
-        <button id="btn-clear" title="Clear All">🗑</button>
-        <button id="btn-physics" title="Toggle Physics">⚡</button>
-        <div class="ctrl-divider"></div>
-        <button id="btn-settings" title="Settings">⚙️</button>
+      <button id="btn-mic" title="Toggle Microphone">🎤</button>
+      <button id="btn-cam" title="Toggle Camera">📷</button>
+      <button id="btn-head" title="Toggle Head Tracking">😎</button>
+      <button id="btn-hand" title="Toggle Hand Tracking">✋</button>
+      <div class="ctrl-divider"></div>
+      <button id="btn-color" title="Color Palette">
+        <span id="color-preview" style="background: #c0c0c0"></span>
+      </button>
+      <button id="btn-undo" title="Undo Last Stroke">↩</button>
+      <button id="btn-clear" title="Clear All">🗑</button>
+      <button id="btn-physics" title="Toggle Physics">⚡</button>
+      <button id="btn-gravity" title="Toggle Gravity">🌍</button>
+      <div class="ctrl-divider"></div>
+      <button id="btn-cube" title="Add Cube">🔲</button>
+      <button id="btn-sphere" title="Add Sphere">🔵</button>
+      <button id="btn-cylinder" title="Add Cylinder">🔷</button>
+      <button id="btn-torus" title="Add Torus">🍩</button>
+      <div class="ctrl-divider"></div>
+      <button id="btn-scene-tree" title="Scene Tree">🌳</button>
+      <button id="btn-quat-ball" title="Precision Rotation">🎱</button>
+      <div class="ctrl-divider"></div>
+      <button id="btn-reflection" title="Toggle Webcam Reflections">🪞</button>
+      <button id="btn-settings" title="Settings">⚙️</button>
     </div>
 
     <!-- Color Palette -->
     <div id="color-palette" class="hidden"></div>
 
-    <!-- Settings Menu -->
-    <div id="settings-menu" class="hidden">
-        <div>
-            <label>Microphone</label>
-            <select id="audio-select"></select>
-        </div>
-        <div>
-            <label>Camera</label>
-            <select id="video-select"></select>
-        </div>
-        <div>
-            <label>Thickness</label>
-            <input id="brush-size" type="range" min="5" max="60" step="1" value="24">
-            <span id="brush-size-val" style="font-size: 12px; color: #aaa;">24</span>
-        </div>
-        <div>
-            <label>Draw Depth</label>
-            <input id="draw-depth" type="range" min="0.5" max="4.0" step="0.1" value="1.5">
-            <span id="draw-depth-val" style="font-size: 12px; color: #aaa;">1.5m</span>
-        </div>
+    <!-- Scene Tree Panel -->
+    <div id="scene-tree-panel" class="hidden">
+      <div
+        style="
+          font-size: 13px;
+          font-weight: 600;
+          margin-bottom: 8px;
+          color: #ccc;
+        "
+      >
+        Scene Objects
+      </div>
+      <div
+        id="scene-tree-list"
+        style="max-height: 300px; overflow-y: auto"
+      ></div>
     </div>
 
-    <!-- Load the depth library script -->
-    <script type="module" crossorigin src="/webgpu-realtime-depth-estimation/assets/index-HiTDJoem.js"></script>
+    <!-- Settings Menu -->
+    <div id="settings-menu" class="hidden">
+      <div>
+        <label>Microphone</label>
+        <select id="audio-select"></select>
+      </div>
+      <div>
+        <label>Camera</label>
+        <select id="video-select"></select>
+      </div>
+      <div>
+        <label>Thickness</label>
+        <input
+          id="brush-size"
+          type="range"
+          min="5"
+          max="60"
+          step="1"
+          value="24"
+        />
+        <span id="brush-size-val" style="font-size: 12px; color: #aaa">24</span>
+      </div>
+      <div>
+        <label>Draw Depth</label>
+        <input
+          id="draw-depth"
+          type="range"
+          min="0.5"
+          max="4.0"
+          step="0.1"
+          value="1.5"
+        />
+        <span id="draw-depth-val" style="font-size: 12px; color: #aaa"
+          >1.5m</span
+        >
+      </div>
+    </div>
 
   </body>
 </html>

@@ -262,68 +262,8 @@
     <!-- Drawing state indicator -->
     <div id="draw-indicator">Pinch to draw</div>
 
-    <!-- WebGPU Depth Estimation Library Elements -->
-    <div
-      id="depth-library-container"
-      style="opacity: 0; position: fixed; pointer-events: none; z-index: -1"
-    >
-      <div id="container">
-        <video id="video" autoplay muted playsinline></video>
-        <canvas id="output-canvas"></canvas>
-      </div>
-      <label id="status">Loading model...</label>
-    </div>
-
-    <!-- Depth quality controls (hidden) -->
-    <div id="controls" style="display: none">
-      <div>
-        <label>Quality</label> <span id="size-value">224</span>px
-        <input
-          id="size"
-          type="range"
-          min="140"
-          max="840"
-          step="14"
-          value="224"
-          disabled
-        />
-      </div>
-      <div>
-        <label>Scale</label>
-        (<label id="scale-value">1.0</label>)
-        <input
-          id="scale"
-          type="range"
-          min="0.1"
-          max="1"
-          step="0.1"
-          value="1.0"
-          disabled
-        />
-      </div>
-      <div>
-        <label>Far Clip</label> <span id="min-depth-val">0.00</span>
-        <input
-          id="min-depth"
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value="0.00"
-        />
-      </div>
-      <div>
-        <label>Near Clip</label> <span id="max-depth-val">0.50</span>
-        <input
-          id="max-depth"
-          type="range"
-          min="0"
-          max="1"
-          step="0.01"
-          value="0.50"
-        />
-      </div>
-    </div>
+    <!-- Hidden webcam video element (used by hand tracking + video call) -->
+    <video id="video" style="display:none" autoplay muted playsinline></video>
 
     <!-- Call Controls -->
     <div id="call-controls">
@@ -348,6 +288,7 @@
       <button id="btn-scene-tree" title="Scene Tree">🌳</button>
       <button id="btn-quat-ball" title="Precision Rotation">🎱</button>
       <div class="ctrl-divider"></div>
+      <button id="btn-reflection" title="Toggle Webcam Reflections">🪞</button>
       <button id="btn-settings" title="Settings">⚙️</button>
     </div>
 
@@ -409,13 +350,6 @@
         >
       </div>
     </div>
-
-    <!-- Load the depth library script -->
-    <script
-      type="module"
-      crossorigin
-      src="/webgpu-realtime-depth-estimation/assets/index-HiTDJoem.js"
-    ></script>
 
     <script type="module" src="/src/main.js"></script>
   </body>

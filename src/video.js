@@ -4,14 +4,19 @@ let callObject;
 let localStream = null;
 let onAppMessageCallback = null;
 let onRemoteVideoCallback = null;
+let onParticipantLeftCallback = null;
 
-const ROOM_URL = "https://vcroom.daily.co/airdraw"; 
+// Multi-participant tracking
+const remoteParticipants = new Map(); // peerId -> { videoEl, trackId }
 
-export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {}) {
+const ROOM_URL = "https://vcroom.daily.co/airdraw";
+
+export async function initVideo({ onRemoteVideo, onAppMessage, onParticipantLeft, videoSource } = {}) {
     console.log("Initializing Daily.co...");
     onRemoteVideoCallback = onRemoteVideo;
     onAppMessageCallback = onAppMessage;
-    
+    onParticipantLeftCallback = onParticipantLeft;
+
     callObject = DailyIframe.createCallObject({
         url: ROOM_URL,
         subscribeToTracksAutomatically: true
@@ -24,6 +29,13 @@ export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {
         if (localPart) {
             updateLocalVideo(localPart);
         }
+
+        // Handle existing remote participants
+        for (const [id, p] of Object.entries(participants)) {
+            if (id !== 'local' && p.video) {
+                updateRemoteVideo(p);
+            }
+        }
     });
 
     callObject.on('participant-updated', (evt) => {
@@ -34,7 +46,18 @@ export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {
             updateRemoteVideo(p);
         }
     });
-    
+
+    callObject.on('participant-left', (evt) => {
+        const p = evt.participant;
+        if (!p.local) {
+            const peerId = p.user_id;
+            removeRemoteParticipant(peerId);
+            if (onParticipantLeftCallback) {
+                onParticipantLeftCallback(peerId);
+            }
+        }
+    });
+
     callObject.on('app-message', (evt) => {
         if (onAppMessageCallback) {
             onAppMessageCallback(evt.data, evt.fromId);
@@ -43,7 +66,7 @@ export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {
 
     try {
         console.log("Joining Daily room...");
-        
+
         // Explicitly get local audio to ensure it works even with custom videoSource
         let audioTrack = null;
         try {
@@ -55,21 +78,21 @@ export async function initVideo({ onRemoteVideo, onAppMessage, videoSource } = {
         }
 
         const joinOptions = { url: ROOM_URL };
-        
+
         if (videoSource) {
             console.log("Using custom video source for Depth/Volumetric video");
             joinOptions.videoSource = videoSource;
         } else {
             joinOptions.video = true;
         }
-        
+
         if (audioTrack) {
              joinOptions.audioSource = audioTrack;
         } else {
              // Fallback
              joinOptions.audio = true;
         }
-        
+
         await callObject.join(joinOptions);
         console.log("Joined Daily room");
     } catch (e) {
@@ -123,12 +146,12 @@ function updateLocalVideo(p) {
     if (track) {
         if (!localStream || localStream.id !== track.id) {
             localStream = new MediaStream([track]);
-            
+
             // Check for library video element first
             let videoEl = document.getElementById('video');
             if (videoEl) {
                 // Library manages its own source. Do not overwrite with Daily's echo.
-                return; 
+                return;
             }
 
             videoEl = document.getElementById('webcam');
@@ -144,66 +167,82 @@ function updateLocalVideo(p) {
     }
 }
 
+// Multi-participant remote video handling
 function updateRemoteVideo(p) {
     if (!p.video) {
         console.log("Remote participant updated but no video", p.user_id);
         return;
     }
+
+    const peerId = p.user_id;
     const track = p.tracks.video.persistentTrack;
-    if (track) {
-         console.log("Remote video track found:", track.id, track.readyState);
-         let remoteEl = document.getElementById('remote-video-el');
-         if (!remoteEl) {
-             console.log("Creating new remote video element");
-             remoteEl = document.createElement('video');
-             remoteEl.id = 'remote-video-el';
-             remoteEl.style.display = 'none'; // We use it as texture, so hide DOM
-             remoteEl.autoplay = true;
-             remoteEl.playsInline = true;
-             // remoteEl.muted = false; // We want to hear them? 
-             // Browsers BLOCK unmuted autoplay. 
-             // We must mute it initially OR ensure user gesture cleared it.
-             // Daily.co usually manages audio via its own audio elements.
-             // This video element is PURELY for texture. So mute it to ensure autoplay works!
-             remoteEl.muted = true; 
-             document.body.appendChild(remoteEl);
-         }
-         
-         if (!remoteEl.srcObject || remoteEl.srcObject.id !== track.id) {
-             console.log("Assigning remote track to element");
-             remoteEl.srcObject = new MediaStream([track]);
-             remoteEl.onloadedmetadata = () => {
-                 console.log("Remote video metadata loaded. Dimensions:", remoteEl.videoWidth, remoteEl.videoHeight);
-                 remoteEl.play().then(() => {
-                     console.log("Remote video playing successfully");
-                     if (onRemoteVideoCallback) {
-                         console.log("Triggering onRemoteVideoCallback");
-                         onRemoteVideoCallback(remoteEl);
-                     }
-                 }).catch(e => {
-                     console.error("Remote video failed to play (Autoplay policy?)", e);
-                     // Fallback: try muted if not already
-                     if (!remoteEl.muted) {
-                         console.log("Retrying playback muted...");
-                         remoteEl.muted = true;
-                         remoteEl.play().catch(e2 => console.error("Remote video failed muted too", e2));
-                     }
-                 });
-             };
-         }
-    } else {
-        console.log("Remote video track is missing or not persistent");
+
+    if (!track) {
+        console.log("Remote video track is missing or not persistent for", peerId);
+        return;
     }
+
+    // Check if we already have this exact track
+    const existing = remoteParticipants.get(peerId);
+    if (existing && existing.trackId === track.id) return;
+
+    console.log(`[Video] Remote video track for ${peerId}:`, track.id, track.readyState);
+
+    // Create or reuse video element for this peer
+    let videoEl;
+    if (existing && existing.videoEl) {
+        videoEl = existing.videoEl;
+    } else {
+        videoEl = document.createElement('video');
+        videoEl.id = `remote-video-${peerId}`;
+        videoEl.style.display = 'none'; // Texture source, hidden from DOM
+        videoEl.autoplay = true;
+        videoEl.playsInline = true;
+        videoEl.muted = true; // Must mute for autoplay policy
+        document.body.appendChild(videoEl);
+    }
+
+    videoEl.srcObject = new MediaStream([track]);
+    videoEl.onloadedmetadata = () => {
+        console.log(`[Video] Remote ${peerId} metadata loaded: ${videoEl.videoWidth}x${videoEl.videoHeight}`);
+        videoEl.play().then(() => {
+            console.log(`[Video] Remote ${peerId} playing`);
+            if (onRemoteVideoCallback) {
+                onRemoteVideoCallback(videoEl, peerId);
+            }
+        }).catch(e => {
+            console.error(`[Video] Remote ${peerId} play failed:`, e);
+            if (!videoEl.muted) {
+                videoEl.muted = true;
+                videoEl.play().catch(e2 => console.error(`[Video] ${peerId} muted retry failed:`, e2));
+            }
+        });
+    };
+
+    remoteParticipants.set(peerId, { videoEl, trackId: track.id });
 }
 
+function removeRemoteParticipant(peerId) {
+    const entry = remoteParticipants.get(peerId);
+    if (!entry) return;
 
-
-// ... updateRemoteVideo ...
+    console.log(`[Video] Removing remote participant ${peerId}`);
+    if (entry.videoEl) {
+        entry.videoEl.pause();
+        entry.videoEl.srcObject = null;
+        entry.videoEl.remove();
+    }
+    remoteParticipants.delete(peerId);
+}
 
 export function getLocalVideoElement() {
     return document.getElementById('video') || document.getElementById('webcam');
 }
 
 export function getRemoteVideoElement() {
-    return document.getElementById('remote-video-el');
+    // Return first remote for backward compat
+    for (const [, entry] of remoteParticipants) {
+        return entry.videoEl;
+    }
+    return null;
 }

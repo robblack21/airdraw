@@ -4,9 +4,8 @@ import { trackingState } from "./vision.js";
 export let scene, camera, renderer;
 let clock;
 
-// Volumetric Video State
-let volumetricSplats = null;
-let cutoutTexture = null;
+// Peer video discs (replaces volumetric cutout)
+const peerDiscs = new Map(); // peerId -> { mesh, videoTexture }
 
 let currentRole = "w";
 
@@ -63,143 +62,90 @@ export function setHeadTrackingEnabled(enabled) {
   headTrackingEnabled = enabled;
 }
 
-export function setDepthThresholds(min, max) {
-  if (volumetricSplats && volumetricSplats.material) {
-    volumetricSplats.material.uniforms.minDepth.value = min;
-    volumetricSplats.material.uniforms.maxDepth.value = max;
+// --- Peer Video Disc System ---
+// Circular cropped video disc rendered in 3D for each remote participant
+
+const _peerDiscVertShader = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
-}
+`;
 
-// Create Volumetric Video as Dynamic Gaussian Splats (Instanced Quads)
-export function createCutout(videoElement) {
-  if (volumetricSplats) {
-    if (cutoutTexture.map.image !== videoElement) {
-      cutoutTexture.map.image = videoElement;
-      cutoutTexture.map.needsUpdate = true;
-    }
-    return;
+const _peerDiscFragShader = `
+  uniform sampler2D map;
+  varying vec2 vUv;
+  void main() {
+    vec2 centered = vUv - 0.5;
+    float dist = length(centered);
+    // Circular mask with smooth edge
+    float alpha = 1.0 - smoothstep(0.42, 0.5, dist);
+    if (alpha < 0.01) discard;
+    // Subtle border ring
+    float border = smoothstep(0.38, 0.42, dist) * (1.0 - smoothstep(0.42, 0.5, dist));
+    vec4 color = texture2D(map, vUv);
+    vec3 finalColor = mix(color.rgb, vec3(1.0), border * 0.5);
+    gl_FragColor = vec4(finalColor, alpha * 0.95);
   }
+`;
 
-  const width = 252;
-  const height = 252;
-  const instanceCount = width * height;
+export function createPeerDisc(videoElement, peerId) {
+  // Remove existing disc for this peer if any
+  removePeerDisc(peerId);
 
-  const baseGeometry = new THREE.PlaneGeometry(1, 1);
-  const geometry = new THREE.InstancedBufferGeometry();
-  geometry.index = baseGeometry.index;
-  geometry.attributes.position = baseGeometry.attributes.position;
-  geometry.attributes.uv = baseGeometry.attributes.uv;
-  geometry.instanceCount = instanceCount;
-
-  const texture = new THREE.VideoTexture(videoElement);
-  texture.format = THREE.RGBAFormat;
-  texture.colorSpace = THREE.SRGBColorSpace;
-
-  cutoutTexture = { map: texture };
+  const geometry = new THREE.CircleGeometry(0.3, 64);
+  const videoTexture = new THREE.VideoTexture(videoElement);
+  videoTexture.colorSpace = THREE.SRGBColorSpace;
+  videoTexture.minFilter = THREE.LinearFilter;
+  videoTexture.magFilter = THREE.LinearFilter;
 
   const material = new THREE.ShaderMaterial({
-    uniforms: {
-      map: { value: texture },
-      depthScale: { value: 1.0 },
-      minDepth: { value: 0.0 },
-      maxDepth: { value: 0.5 },
-      splatScale: { value: 0.015 },
-      unprojectScale: { value: 1.15 },
-      aspectRatio: { value: 1.0 },
-    },
-    vertexShader: `
-      uniform sampler2D map;
-      uniform float depthScale;
-      uniform float splatScale;
-      uniform float unprojectScale;
-
-      varying vec2 vUv;
-      varying vec2 vImgUv;
-      varying float vDepth;
-
-      const float width = 252.0;
-      const float height = 252.0;
-
-      void main() {
-        vUv = uv;
-
-        float gridX = mod(float(gl_InstanceID), width);
-        float gridY = floor(float(gl_InstanceID) / width);
-
-        vec2 gridUv = vec2((gridX + 0.5) / width, (gridY + 0.5) / height);
-        vImgUv = gridUv;
-
-        vec2 depthUv = vec2(gridUv.x * 0.5 + 0.5, gridUv.y);
-        float d = texture2D(map, depthUv).r;
-        vDepth = d;
-
-        float x = ((gridX / width) - 0.5) * unprojectScale;
-        float y = ((gridY / height) - 0.5) * unprojectScale;
-
-        vec3 centerPos = vec3(x, y, 0.0);
-        centerPos.z += d * depthScale;
-
-        vec4 mvPosition = modelViewMatrix * vec4(centerPos, 1.0);
-        vec2 scale = vec2(splatScale);
-        mvPosition.xy += position.xy * scale;
-
-        gl_Position = projectionMatrix * mvPosition;
-      }
-    `,
-    fragmentShader: `
-      uniform sampler2D map;
-      uniform float minDepth;
-      uniform float maxDepth;
-
-      varying vec2 vUv;
-      varying vec2 vImgUv;
-      varying float vDepth;
-
-      void main() {
-        if (vDepth < minDepth || vDepth > maxDepth) discard;
-
-        vec2 center = vUv - 0.5;
-        float distSq = dot(center, center);
-        float alpha = exp(-distSq * 10.0);
-
-        if (alpha < 0.01) discard;
-
-        vec2 colorUv = vec2(vImgUv.x * 0.5, vImgUv.y);
-        vec4 color = texture2D(map, colorUv);
-
-        gl_FragColor = vec4(color.rgb, alpha);
-      }
-    `,
+    uniforms: { map: { value: videoTexture } },
+    vertexShader: _peerDiscVertShader,
+    fragmentShader: _peerDiscFragShader,
     transparent: true,
     depthWrite: false,
-    blending: THREE.NormalBlending,
     side: THREE.DoubleSide,
   });
 
-  volumetricSplats = new THREE.InstancedMesh(geometry, material, instanceCount);
-  volumetricSplats.frustumCulled = false;
-  volumetricSplats.renderOrder = 999;
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = `_peerDisc_${peerId}`;
+  mesh.frustumCulled = false;
 
-  scene.add(volumetricSplats);
-  updateVolumetricPose();
+  // Default position — will be updated by pose sync
+  mesh.position.set(0, 1.5, -1.0);
+
+  scene.add(mesh);
+  peerDiscs.set(peerId, { mesh, videoTexture });
+  console.log(`[Scene] Created peer disc for ${peerId}`);
+  return mesh;
 }
 
-function updateVolumetricPose() {
-  if (!volumetricSplats) return;
+export function removePeerDisc(peerId) {
+  const entry = peerDiscs.get(peerId);
+  if (!entry) return;
+  scene.remove(entry.mesh);
+  entry.mesh.geometry.dispose();
+  entry.mesh.material.dispose();
+  entry.videoTexture.dispose();
+  peerDiscs.delete(peerId);
+  console.log(`[Scene] Removed peer disc for ${peerId}`);
+}
 
-  const dist = 0.55;
-  const height = 0.95;
-
-  volumetricSplats.scale.set(0.65, 0.65, 0.65);
-
-  if (currentRole === "w") {
-    volumetricSplats.position.set(0, height, -dist);
-    volumetricSplats.lookAt(0, height, dist);
-  } else if (currentRole === "b") {
-    volumetricSplats.position.set(0, height, dist);
-    volumetricSplats.lookAt(0, height, -dist);
+export function updatePeerDiscPose(peerId, position, rotation) {
+  const entry = peerDiscs.get(peerId);
+  if (!entry) return;
+  entry.mesh.position.set(position[0], position[1], position[2]);
+  if (rotation) {
+    entry.mesh.quaternion.set(rotation[0], rotation[1], rotation[2], rotation[3]);
   }
-  volumetricSplats.rotation.y += Math.PI;
+}
+
+export function updatePeerDiscsBillboard() {
+  for (const [, entry] of peerDiscs) {
+    entry.mesh.lookAt(camera.position);
+  }
 }
 
 export function setupControls(dom) {
@@ -320,7 +266,6 @@ const spawnOffsetZ = (Math.random() - 0.5) * 1.0;
 
 export function updateCameraPose(role) {
   currentRole = role;
-  updateVolumetricPose();
 
   if (isOverhead) return;
 
@@ -423,7 +368,10 @@ export async function initScene() {
     scene,
     camera,
     renderer,
-    createCutout,
+    createPeerDisc,
+    removePeerDisc,
+    updatePeerDiscPose,
+    updatePeerDiscsBillboard,
   };
 }
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { initScene, animateScene, updateCameraPose, scene, camera, renderer } from './scene.js';
+import { initScene, animateScene, updateCameraPose, scene, camera, renderer,
+         createPeerDisc, removePeerDisc, updatePeerDiscPose, updatePeerDiscsBillboard } from './scene.js';
 import { initVision, updateVision, trackingState } from './vision.js';
 import { initUI } from './ui.js';
 import { StrokeRecorder } from './drawing.js';
@@ -9,107 +10,12 @@ import { loadEnvironment, updateWebcamReflection } from './hdr.js';
 import { ObjectControls } from './objectControls.js';
 import { QuatBall } from './quatBall.js';
 import { buildDemoScene } from './demoScene.js';
+import { initVideo, getCallObject } from './video.js';
 
 const loadingUi = document.getElementById('loading');
 const loadingDetails = document.getElementById('loading-details');
 const startBtn = document.getElementById('start-btn');
 const drawIndicator = document.getElementById('draw-indicator');
-
-// ---------- Hand tracking overlay ----------
-let overlayCanvas, overlayCtx;
-
-function initHandOverlay() {
-  overlayCanvas = document.createElement('canvas');
-  overlayCanvas.id = 'hand-overlay';
-  overlayCanvas.width = 320;
-  overlayCanvas.height = 240;
-  Object.assign(overlayCanvas.style, {
-    position: 'absolute',
-    bottom: '80px',
-    left: '16px',
-    width: '240px',
-    height: '180px',
-    borderRadius: '12px',
-    border: '1px solid rgba(255,255,255,0.15)',
-    background: 'rgba(0,0,0,0.6)',
-    zIndex: '999',
-    pointerEvents: 'none'
-  });
-  document.body.appendChild(overlayCanvas);
-  overlayCtx = overlayCanvas.getContext('2d');
-}
-
-function drawHandOverlay(video) {
-  if (!overlayCtx || !video || !video.videoWidth) return;
-
-  const w = overlayCanvas.width;
-  const h = overlayCanvas.height;
-
-  // Draw mirrored video
-  overlayCtx.save();
-  overlayCtx.translate(w, 0);
-  overlayCtx.scale(-1, 1);
-  overlayCtx.drawImage(video, 0, 0, w, h);
-  overlayCtx.restore();
-
-  // Draw hand landmarks
-  if (trackingState.handLandmarks && trackingState.handLandmarks.length > 0) {
-    for (const hand of trackingState.handLandmarks) {
-      // Draw connections
-      const connections = [
-        [0,1],[1,2],[2,3],[3,4],       // thumb
-        [0,5],[5,6],[6,7],[7,8],       // index
-        [5,9],[9,10],[10,11],[11,12],  // middle
-        [9,13],[13,14],[14,15],[15,16],// ring
-        [13,17],[17,18],[18,19],[19,20],// pinky
-        [0,17]                          // palm base
-      ];
-
-      overlayCtx.strokeStyle = 'rgba(0, 255, 120, 0.7)';
-      overlayCtx.lineWidth = 1.5;
-      for (const [a, b] of connections) {
-        const la = hand[a], lb = hand[b];
-        overlayCtx.beginPath();
-        overlayCtx.moveTo((1 - la.x) * w, la.y * h);
-        overlayCtx.lineTo((1 - lb.x) * w, lb.y * h);
-        overlayCtx.stroke();
-      }
-
-      // Draw points
-      for (let i = 0; i < hand.length; i++) {
-        const lm = hand[i];
-        const px = (1 - lm.x) * w;
-        const py = lm.y * h;
-
-        // Special colors for thumb tip (4) and index tip (8)
-        if (i === 4 || i === 8) {
-          overlayCtx.fillStyle = '#ff4444';
-          overlayCtx.beginPath();
-          overlayCtx.arc(px, py, 4, 0, Math.PI * 2);
-          overlayCtx.fill();
-        } else {
-          overlayCtx.fillStyle = '#00ff88';
-          overlayCtx.beginPath();
-          overlayCtx.arc(px, py, 2.5, 0, Math.PI * 2);
-          overlayCtx.fill();
-        }
-      }
-
-      // Show pinch state
-      if (trackingState.handInteraction) {
-        const isPinched = trackingState.handInteraction.isPinched;
-        overlayCtx.fillStyle = isPinched ? '#ff4444' : '#00ff88';
-        overlayCtx.font = 'bold 14px monospace';
-        overlayCtx.fillText(isPinched ? '● PINCH' : '○ open', 8, h - 8);
-      }
-    }
-  } else {
-    // No hands detected
-    overlayCtx.fillStyle = 'rgba(255,255,255,0.3)';
-    overlayCtx.font = '12px monospace';
-    overlayCtx.fillText('No hands detected', 8, h - 8);
-  }
-}
 
 // ---------- 3D Hand Cursor in scene (supports 2 hands) ----------
 const MAX_HANDS = 2;
@@ -337,8 +243,7 @@ async function main() {
     // Start physics sync broadcast (host will broadcast, non-host will receive)
     sync.startPhysicsSync(physics);
 
-    // 10. Hand tracking overlay + 3D cursor
-    initHandOverlay();
+    // 10. 3D Hand cursor
     init3DHandCursor(sceneCtx.scene);
 
     // Ready
@@ -358,7 +263,10 @@ async function main() {
         const videoEl = document.getElementById('video');
         if (videoEl && !videoEl.srcObject) {
           try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            const stream = await navigator.mediaDevices.getUserMedia({
+              video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+              audio: false
+            });
             videoEl.srcObject = stream;
             await videoEl.play();
           } catch (e) { console.warn('Could not start webcam:', e); }
@@ -371,6 +279,28 @@ async function main() {
 
         // Init drag interaction
         initDragInteraction(physics, sceneCtx.scene, sceneCtx.camera, sceneCtx.renderer);
+
+        // Initialize Daily.co video call for multiplayer
+        try {
+          await initVideo({
+            onRemoteVideo: (videoEl, peerId) => {
+              createPeerDisc(videoEl, peerId);
+            },
+            onAppMessage: (data, fromId) => {
+              sync.handleMessage(data, drawer, physics, fromId);
+            },
+            onParticipantLeft: (peerId) => {
+              removePeerDisc(peerId);
+              sync.removePeer(peerId);
+            }
+          });
+
+          // Connect sync to Daily call object
+          const co = getCallObject();
+          if (co) sync.setCallObject(co);
+        } catch (e) {
+          console.warn('Video call init failed (running in local mode):', e);
+        }
 
         loadingUi.classList.add('hidden');
 
@@ -385,9 +315,7 @@ async function main() {
           // Vision
           updateVision();
 
-          // Hand tracking overlay + 3D cursor
-          const videoEl = document.getElementById('video');
-          drawHandOverlay(videoEl);
+          // 3D hand cursor
           update3DHandCursor(sceneCtx.camera, drawer);
 
           // --- Open palm detection + ring highlight + push ---
@@ -449,7 +377,7 @@ async function main() {
 
             // Apply push force with open palm — magnitude scales with palm size
             if (isOpenPalm && handWorldPos) {
-              const pushMagnitude = Math.max(0.5, palmScale * 30);
+              const pushMagnitude = Math.max(2.0, palmScale * 80);
               physics.applyPalmForce(handWorldPos, pushMagnitude);
               if (drawIndicator) {
                 drawIndicator.classList.add('active');
@@ -504,6 +432,26 @@ async function main() {
             // Non-host: interpolate meshes to positions received from host
             sync.lerpPhysicsBodies(physics);
           }
+
+          // Broadcast local camera pose to peers (~10fps, throttled in sync)
+          sync.broadcastUserPose(sceneCtx.camera.position, sceneCtx.camera.quaternion);
+
+          // Update peer disc positions from synced poses
+          const peerPoses = sync.getPeerPoses();
+          for (const [peerId, pose] of peerPoses) {
+            // Position disc slightly below and in front of peer's camera
+            const peerQuat = new THREE.Quaternion(pose.rot[0], pose.rot[1], pose.rot[2], pose.rot[3]);
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(peerQuat);
+            const discPos = [
+              pose.pos[0] + forward.x * 0.5,
+              pose.pos[1] - 0.3 + forward.y * 0.5,
+              pose.pos[2] + forward.z * 0.5
+            ];
+            updatePeerDiscPose(peerId, discPos, pose.rot);
+          }
+
+          // Billboard peer discs to always face local camera
+          updatePeerDiscsBillboard();
 
           // Webcam reflections (throttled internally)
           const vidEl = document.getElementById('video');

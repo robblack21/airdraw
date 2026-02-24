@@ -13,7 +13,9 @@
       "WebFetch(domain:unpkg.com)",
       "WebFetch(domain:app.unpkg.com)",
       "Bash(gh repo create:*)",
-      "Bash(git remote set-url:*)"
+      "Bash(git remote set-url:*)",
+      "Bash(npx vite build:*)",
+      "Bash(grep:*)"
     ]
   }
 }
