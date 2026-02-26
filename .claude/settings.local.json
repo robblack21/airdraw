@@ -16,7 +16,12 @@
       "Bash(git remote set-url:*)",
       "Bash(npx vite build:*)",
       "Bash(grep:*)",
-      "Bash(export PATH=\"/usr/local/bin:/opt/homebrew/bin:$HOME/.nvm/versions/node/*/bin:$PATH\")"
+      "Bash(export PATH=\"/usr/local/bin:/opt/homebrew/bin:$HOME/.nvm/versions/node/*/bin:$PATH\")",
+      "Bash(git status -u)",
+      "Bash(git checkout gh-pages)",
+      "Bash(git stash)",
+      "Bash(npx gh-pages --version)",
+      "Bash(npx gh-pages -d dist --dotfiles)"
     ]
   }
 }
