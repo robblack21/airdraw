@@ -234,6 +234,66 @@
       .scene-tree-icon {
         font-size: 14px;
       }
+
+      /* Help panel */
+      #help-panel {
+        position: absolute;
+        bottom: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(0, 0, 0, 0.88);
+        padding: 16px 20px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        backdrop-filter: blur(20px);
+        z-index: 2000;
+        pointer-events: auto;
+        max-width: 420px;
+        width: 90vw;
+      }
+      .help-section {
+        margin-bottom: 10px;
+      }
+      .help-section:last-child {
+        margin-bottom: 0;
+      }
+      .help-heading {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #888;
+        margin-bottom: 4px;
+        border-bottom: 1px solid rgba(255,255,255,0.08);
+        padding-bottom: 3px;
+      }
+      .help-row {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        color: #bbb;
+        padding: 2px 0;
+      }
+      .help-row span:last-child {
+        margin-left: auto;
+        color: #999;
+      }
+      .help-row kbd {
+        display: inline-block;
+        background: rgba(255,255,255,0.1);
+        border: 1px solid rgba(255,255,255,0.2);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-family: monospace;
+        font-size: 11px;
+        min-width: 18px;
+        text-align: center;
+        color: #ddd;
+      }
+      .help-icon {
+        font-size: 14px;
+        margin-right: 2px;
+      }
     </style>
   </head>
   <body>
@@ -290,6 +350,7 @@
       <div class="ctrl-divider"></div>
       <button id="btn-reflection" title="Toggle Webcam Reflections">🪞</button>
       <button id="btn-settings" title="Settings">⚙️</button>
+      <button id="btn-help" title="Keyboard Shortcuts">?</button>
     </div>
 
     <!-- Color Palette -->
@@ -361,6 +422,35 @@
         />
         <span id="hand-fps-val" style="font-size: 12px; color: #aaa">30 fps</span>
         <span id="hand-fps-stats" style="font-size: 10px; color: #666; display: block; margin-top: 2px;"></span>
+      </div>
+    </div>
+
+    <!-- Help / Keyboard Map -->
+    <div id="help-panel" class="hidden">
+      <div style="font-size:14px;font-weight:600;margin-bottom:10px;color:#eee;">Keyboard & Mouse Controls</div>
+      <div class="help-section">
+        <div class="help-heading">Camera</div>
+        <div class="help-row"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>Move</span></div>
+        <div class="help-row"><kbd>Q</kbd><kbd>E</kbd><span>Down / Up</span></div>
+        <div class="help-row"><kbd>I</kbd><kbd>J</kbd><kbd>K</kbd><kbd>L</kbd><span>Look</span></div>
+        <div class="help-row"><kbd>[</kbd><kbd>]</kbd><span>Zoom out / in</span></div>
+        <div class="help-row"><span class="help-icon">🖱</span> Scroll<span>Zoom</span></div>
+      </div>
+      <div class="help-section">
+        <div class="help-heading">Selected Object</div>
+        <div class="help-row"><span>Click object to select</span></div>
+        <div class="help-row"><kbd>T</kbd><kbd>B</kbd><span>Move up / down</span></div>
+        <div class="help-row"><kbd>G</kbd><kbd>H</kbd><span>Move left / right</span></div>
+        <div class="help-row"><kbd>F</kbd><kbd>V</kbd><span>Move fwd / back</span></div>
+        <div class="help-row"><kbd>R</kbd><kbd>Y</kbd><span>Pitch</span></div>
+        <div class="help-row"><kbd>O</kbd><kbd>P</kbd><span>Yaw</span></div>
+        <div class="help-row"><kbd>,</kbd><kbd>.</kbd><span>Scale down / up</span></div>
+        <div class="help-row"><kbd>Esc</kbd><span>Deselect</span></div>
+      </div>
+      <div class="help-section">
+        <div class="help-heading">Drawing</div>
+        <div class="help-row"><span>Pinch thumb + index to draw</span></div>
+        <div class="help-row"><span>Open hand pushes physics objects</span></div>
       </div>
     </div>
 

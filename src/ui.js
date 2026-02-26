@@ -51,6 +51,8 @@ export class CallUI {
     this.sceneTreeList = document.getElementById('scene-tree-list');
     this.quatBallBtn = document.getElementById('btn-quat-ball');
     this.reflectionBtn = document.getElementById('btn-reflection');
+    this.helpBtn = document.getElementById('btn-help');
+    this.helpPanel = document.getElementById('help-panel');
 
     this.isMicOn = true;
     this.isCamOn = true;
@@ -62,6 +64,7 @@ export class CallUI {
     this.isGravityOn = true;
     this.isSceneTreeOpen = false;
     this.isReflectionOn = false;
+    this.isHelpOpen = false;
     this.selectedColor = PALETTE[0];
 
     this.buildColorPalette();
@@ -326,6 +329,22 @@ export class CallUI {
       });
     }
 
+    // Help panel toggle
+    if (this.helpBtn) {
+      this.helpBtn.addEventListener('click', () => {
+        this.isHelpOpen = !this.isHelpOpen;
+        if (this.isHelpOpen) {
+          this.helpPanel.classList.remove('hidden');
+          this.settingsMenu.classList.add('hidden');
+          this.colorPalette.classList.add('hidden');
+          this.isSettingsOpen = false;
+          this.isColorOpen = false;
+        } else {
+          this.helpPanel.classList.add('hidden');
+        }
+      });
+    }
+
     // Settings
     if (this.settingsBtn) {
       this.settingsBtn.addEventListener('click', async () => {
@@ -405,6 +424,10 @@ export class CallUI {
       if (this.isSettingsOpen && this.settingsMenu && !this.settingsMenu.contains(e.target) && !this.settingsBtn.contains(e.target)) {
         this.settingsMenu.classList.add('hidden');
         this.isSettingsOpen = false;
+      }
+      if (this.isHelpOpen && this.helpPanel && !this.helpPanel.contains(e.target) && !this.helpBtn.contains(e.target)) {
+        this.helpPanel.classList.add('hidden');
+        this.isHelpOpen = false;
       }
     });
   }
