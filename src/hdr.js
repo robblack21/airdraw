@@ -35,7 +35,8 @@ export async function loadEnvironment(scene, renderer) {
 
   try {
     const hdrLoader = new RGBELoader();
-    const hdrTexture = await hdrLoader.loadAsync('/assets/environment.hdr');
+    const base = import.meta.env.BASE_URL || '/';
+    const hdrTexture = await hdrLoader.loadAsync(`${base}assets/environment.hdr`);
     hdrTexture.mapping = THREE.EquirectangularReflectionMapping;
 
     const envMap = pmremGenerator.fromEquirectangular(hdrTexture).texture;
