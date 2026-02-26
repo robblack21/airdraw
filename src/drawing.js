@@ -33,13 +33,24 @@ export const PALETTE_MATERIALS = {
   '#ffffff': { metalness: 1.00, roughness: 0.00 },
 };
 
+function _makeHandState() {
+  return {
+    state: DRAW_STATES.IDLE,
+    activePoints: [],
+    activeMesh: null,
+    activeStrokeId: null,
+    smoothPos: null,
+    activeMaterial: null,
+    pointsSinceRebuild: 0,
+  };
+}
+
 export class StrokeRecorder {
   constructor(scene, camera) {
     this.scene = scene;
     this.camera = camera;
-    this.state = DRAW_STATES.IDLE;
-    this.activePoints = [];
-    this.activeMesh = null;
+    // Per-hand drawing state (supports 2 simultaneous hands)
+    this._handState = [_makeHandState(), _makeHandState()];
     this.completedStrokes = [];
     this.remoteStrokes = new Map();
     this.drawDepth = 1.5;
@@ -48,15 +59,11 @@ export class StrokeRecorder {
     this.minPointDistance = 0.01;
     this.color = new THREE.Color(PALETTE[0]);
     this.colorHex = PALETTE[0];
-    this.activeStrokeId = null;
 
     // Smoothing: exponential moving average
-    this._smoothPos = null;
     this._smoothAlpha = 0.5; // lower = smoother, higher = more responsive
-    this._activeMaterial = null; // cached material for active stroke
     this._activeRadialSegments = 4; // minimal cross-section during drawing (perf)
     this._rebuildEveryN = 4; // only rebuild geometry every Nth point
-    this._pointsSinceRebuild = 0;
   }
 
   /**
@@ -109,36 +116,43 @@ export class StrokeRecorder {
     this.drawDepth = depth;
   }
 
-  update(handInteraction) {
+  // ── Public update: call once per hand per frame ──
+  update(handInteraction, handIndex = 0) {
+    const hs = this._handState[handIndex];
     if (!handInteraction) {
-      if (this.state === DRAW_STATES.DRAWING) {
-        return this.endStroke();
+      if (hs.state === DRAW_STATES.DRAWING) {
+        return this._endStroke(hs);
       }
       return null;
     }
 
     if (handInteraction.isPinched) {
-      const worldPos = this.screenToWorld(handInteraction.x, handInteraction.y);
+      const worldPos = this._screenToWorldSmoothed(handInteraction.x, handInteraction.y, hs);
 
-      if (this.state === DRAW_STATES.IDLE) {
-        this.startStroke(worldPos);
-        return { type: 'stroke:start', data: { id: this.activeStrokeId, color: '#' + this.color.getHexString(), radius: this.tubeRadius } };
+      if (hs.state === DRAW_STATES.IDLE) {
+        this._startStroke(worldPos, hs);
+        return { type: 'stroke:start', data: { id: hs.activeStrokeId, color: '#' + this.color.getHexString(), radius: this.tubeRadius } };
       } else {
-        const added = this.continueStroke(worldPos);
+        const added = this._continueStroke(worldPos, hs);
         if (added) {
-          return { type: 'stroke:point', data: { id: this.activeStrokeId, point: [worldPos.x, worldPos.y, worldPos.z] } };
+          return { type: 'stroke:point', data: { id: hs.activeStrokeId, point: [worldPos.x, worldPos.y, worldPos.z] } };
         }
       }
     } else {
-      if (this.state === DRAW_STATES.DRAWING) {
-        return this.endStroke();
+      if (hs.state === DRAW_STATES.DRAWING) {
+        return this._endStroke(hs);
       }
     }
 
     return null;
   }
 
+  // ── Backward-compat wrapper for UI (primitive spawning) ──
   screenToWorld(nx, ny) {
+    return this._screenToWorldSmoothed(nx, ny, this._handState[0]);
+  }
+
+  _screenToWorldSmoothed(nx, ny, hs) {
     const ndc = new THREE.Vector3(
       (1 - nx) * 2 - 1,
       -(ny * 2 - 1),
@@ -149,98 +163,88 @@ export class StrokeRecorder {
     const dir = ndc.sub(this.camera.position).normalize();
     const raw = this.camera.position.clone().add(dir.multiplyScalar(this.drawDepth));
 
-    // Exponential moving average smoothing — much smoother than buffer averaging
-    if (!this._smoothPos) {
-      this._smoothPos = raw.clone();
+    if (!hs.smoothPos) {
+      hs.smoothPos = raw.clone();
     } else {
-      this._smoothPos.lerp(raw, this._smoothAlpha);
+      hs.smoothPos.lerp(raw, this._smoothAlpha);
     }
 
-    return this._smoothPos.clone();
+    return hs.smoothPos.clone();
   }
 
-  startStroke(point) {
-    this.state = DRAW_STATES.DRAWING;
-    this.activePoints = [point.clone()];
-    this.activeStrokeId = crypto.randomUUID();
-    this._smoothPos = point.clone();
-    this._activeMaterial = null; // fresh material for new stroke
-    this._pointsSinceRebuild = 0;
+  _startStroke(point, hs) {
+    hs.state = DRAW_STATES.DRAWING;
+    hs.activePoints = [point.clone()];
+    hs.activeStrokeId = crypto.randomUUID();
+    hs.smoothPos = point.clone();
+    hs.activeMaterial = null;
+    hs.pointsSinceRebuild = 0;
   }
 
-  continueStroke(point) {
-    const last = this.activePoints[this.activePoints.length - 1];
+  _continueStroke(point, hs) {
+    const last = hs.activePoints[hs.activePoints.length - 1];
     if (point.distanceTo(last) < this.minPointDistance) return false;
 
-    this.activePoints.push(point.clone());
-    this._pointsSinceRebuild++;
+    hs.activePoints.push(point.clone());
+    hs.pointsSinceRebuild++;
 
-    // Throttle geometry rebuilds — only every Nth point (still adds point for final curve)
-    if (this._pointsSinceRebuild >= this._rebuildEveryN || this.activePoints.length <= 4) {
-      this._pointsSinceRebuild = 0;
-      this.rebuildActiveMesh();
+    if (hs.pointsSinceRebuild >= this._rebuildEveryN || hs.activePoints.length <= 4) {
+      hs.pointsSinceRebuild = 0;
+      this._rebuildActiveMesh(hs);
     }
     return true;
   }
 
-  endStroke() {
-    this.state = DRAW_STATES.IDLE;
-    this._smoothPos = null;
+  _endStroke(hs) {
+    hs.state = DRAW_STATES.IDLE;
+    hs.smoothPos = null;
 
-    if (this.activePoints.length < 3) {
-      if (this.activeMesh) {
-        this.scene.remove(this.activeMesh);
-        this.activeMesh.geometry.dispose();
-        this.activeMesh.material.dispose();
+    if (hs.activePoints.length < 3) {
+      if (hs.activeMesh) {
+        this.scene.remove(hs.activeMesh);
+        hs.activeMesh.geometry.dispose();
+        hs.activeMesh.material.dispose();
       }
-      this.activeMesh = null;
-      this.activePoints = [];
-      const id = this.activeStrokeId;
-      this.activeStrokeId = null;
+      hs.activeMesh = null;
+      hs.activePoints = [];
+      const id = hs.activeStrokeId;
+      hs.activeStrokeId = null;
       return { type: 'stroke:cancel', data: { id } };
     }
 
     // Check if ring: start close to end
-    const start = this.activePoints[0];
-    const end = this.activePoints[this.activePoints.length - 1];
-    const ringThreshold = 0.10; // 10cm — generous threshold
-    const isRing = start.distanceTo(end) < ringThreshold && this.activePoints.length >= 6;
+    const start = hs.activePoints[0];
+    const end = hs.activePoints[hs.activePoints.length - 1];
+    const ringThreshold = 0.10;
+    const isRing = start.distanceTo(end) < ringThreshold && hs.activePoints.length >= 6;
 
     let center = null;
     let radius = 0;
 
     if (isRing) {
-      // *** RING AUTOCOMPLETION ***
-      // Fit an ellipse/circle to the drawn points and replace with a clean ring
-
-      // 1. Compute center
       center = new THREE.Vector3();
-      for (const p of this.activePoints) center.add(p);
-      center.divideScalar(this.activePoints.length);
+      for (const p of hs.activePoints) center.add(p);
+      center.divideScalar(hs.activePoints.length);
 
-      // 2. Compute average radius
-      for (const p of this.activePoints) {
+      for (const p of hs.activePoints) {
         radius += p.distanceTo(center);
       }
-      radius /= this.activePoints.length;
+      radius /= hs.activePoints.length;
 
-      // 3. Compute the ring plane normal (best-fit plane via cross products)
       const normal = new THREE.Vector3();
-      for (let i = 0; i < this.activePoints.length - 1; i++) {
-        const a = this.activePoints[i].clone().sub(center);
-        const b = this.activePoints[i + 1].clone().sub(center);
+      for (let i = 0; i < hs.activePoints.length - 1; i++) {
+        const a = hs.activePoints[i].clone().sub(center);
+        const b = hs.activePoints[i + 1].clone().sub(center);
         normal.add(new THREE.Vector3().crossVectors(a, b));
       }
       normal.normalize();
-      if (normal.lengthSq() < 0.001) normal.set(0, 0, 1); // fallback
+      if (normal.lengthSq() < 0.001) normal.set(0, 0, 1);
 
-      // 4. Build orthonormal basis on the ring plane
       const up = new THREE.Vector3(0, 1, 0);
       if (Math.abs(normal.dot(up)) > 0.99) up.set(1, 0, 0);
       const tangent = new THREE.Vector3().crossVectors(normal, up).normalize();
       const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
 
-      // 5. Generate clean circle points
       const circlePoints = [];
       const circleSegments = 48;
       for (let i = 0; i <= circleSegments; i++) {
@@ -253,64 +257,61 @@ export class StrokeRecorder {
         circlePoints.push(pt);
       }
 
-      // Replace drawn points with clean circle
-      this.activePoints = circlePoints;
+      hs.activePoints = circlePoints;
 
-      // Rebuild mesh with clean ring — swap geometry + material in place
-      const curve = new THREE.CatmullRomCurve3(this.activePoints, true); // closed
+      const curve = new THREE.CatmullRomCurve3(hs.activePoints, true);
       const ringGeo = new THREE.TubeGeometry(curve, 64, this.tubeRadius, this.tubeSegments, true);
-      if (this.activeMesh) {
-        const oldGeo = this.activeMesh.geometry;
-        this.activeMesh.geometry = ringGeo;
+      if (hs.activeMesh) {
+        const oldGeo = hs.activeMesh.geometry;
+        hs.activeMesh.geometry = ringGeo;
         oldGeo.dispose();
-        // Swap to full material
-        if (this._activeMaterial) {
-          this._activeMaterial.dispose();
-          this.activeMesh.material = this._makeMaterial();
-          this._activeMaterial = null;
+        if (hs.activeMaterial) {
+          hs.activeMaterial.dispose();
+          hs.activeMesh.material = this._makeMaterial();
+          hs.activeMaterial = null;
         }
       } else {
-        this.activeMesh = new THREE.Mesh(ringGeo, this._makeMaterial());
-        this.scene.add(this.activeMesh);
+        hs.activeMesh = new THREE.Mesh(ringGeo, this._makeMaterial());
+        this.scene.add(hs.activeMesh);
       }
     }
 
-    // Full-quality rebuild for non-ring strokes (upgrade from low-LOD active drawing)
-    if (!isRing && this.activeMesh && this.activePoints.length >= 2) {
-      const oldGeo = this.activeMesh.geometry;
-      const curve = new THREE.CatmullRomCurve3(this.activePoints);
+    // Full-quality rebuild for non-ring strokes
+    if (!isRing && hs.activeMesh && hs.activePoints.length >= 2) {
+      const oldGeo = hs.activeMesh.geometry;
+      const curve = new THREE.CatmullRomCurve3(hs.activePoints);
       curve.curveType = 'catmullrom';
       curve.tension = 0.5;
-      const segs = Math.min(Math.max(this.activePoints.length * 3, 16), 96);
+      const segs = Math.min(Math.max(hs.activePoints.length * 3, 16), 96);
       const finalGeo = new THREE.TubeGeometry(
         curve, segs, this.tubeRadius, this.tubeSegments, false
       );
-      this.activeMesh.geometry = finalGeo;
+      hs.activeMesh.geometry = finalGeo;
       oldGeo.dispose();
     }
 
-    // Upgrade material: swap lightweight active material → full MeshPhysicalMaterial
-    if (this.activeMesh && this._activeMaterial) {
-      this._activeMaterial.dispose();
-      this.activeMesh.material = this._makeMaterial();
+    // Upgrade material
+    if (hs.activeMesh && hs.activeMaterial) {
+      hs.activeMaterial.dispose();
+      hs.activeMesh.material = this._makeMaterial();
     }
 
     const stroke = {
-      mesh: this.activeMesh,
-      points: this.activePoints.map(p => [p.x, p.y, p.z]),
+      mesh: hs.activeMesh,
+      points: hs.activePoints.map(p => [p.x, p.y, p.z]),
       color: '#' + this.color.getHexString(),
-      id: this.activeStrokeId,
+      id: hs.activeStrokeId,
       isRing,
       center: center ? [center.x, center.y, center.z] : null,
       radius
     };
 
     this.completedStrokes.push(stroke);
-    this.activeMesh = null;
-    this.activePoints = [];
-    this._activeMaterial = null;
-    const id = this.activeStrokeId;
-    this.activeStrokeId = null;
+    hs.activeMesh = null;
+    hs.activePoints = [];
+    hs.activeMaterial = null;
+    const id = hs.activeStrokeId;
+    hs.activeStrokeId = null;
 
     return { type: 'stroke:complete', data: stroke };
   }
@@ -328,28 +329,26 @@ export class StrokeRecorder {
     });
   }
 
-  rebuildActiveMesh() {
-    if (this.activePoints.length < 2) return;
+  _rebuildActiveMesh(hs) {
+    if (hs.activePoints.length < 2) return;
 
-    const curve = new THREE.CatmullRomCurve3(this.activePoints);
+    const curve = new THREE.CatmullRomCurve3(hs.activePoints);
     curve.curveType = 'catmullrom';
     curve.tension = 0.5;
-    const segments = Math.min(Math.max(this.activePoints.length * 2, 8), 64);
+    const segments = Math.min(Math.max(hs.activePoints.length * 2, 8), 64);
     const geometry = new THREE.TubeGeometry(
       curve, segments, this.tubeRadius, this._activeRadialSegments, false
     );
 
-    if (!this.activeMesh) {
-      // Use lightweight material during drawing for performance
-      if (!this._activeMaterial) {
-        this._activeMaterial = this._makeActiveMaterial();
+    if (!hs.activeMesh) {
+      if (!hs.activeMaterial) {
+        hs.activeMaterial = this._makeActiveMaterial();
       }
-      this.activeMesh = new THREE.Mesh(geometry, this._activeMaterial);
-      this.scene.add(this.activeMesh); // add to scene only once
+      hs.activeMesh = new THREE.Mesh(geometry, hs.activeMaterial);
+      this.scene.add(hs.activeMesh);
     } else {
-      // Swap geometry in place — no remove/add, no flicker
-      const oldGeo = this.activeMesh.geometry;
-      this.activeMesh.geometry = geometry;
+      const oldGeo = hs.activeMesh.geometry;
+      hs.activeMesh.geometry = geometry;
       oldGeo.dispose();
     }
   }
@@ -446,6 +445,16 @@ export class StrokeRecorder {
   }
 
   clearAll() {
+    // Clean up active strokes on both hands
+    for (const hs of this._handState) {
+      if (hs.activeMesh) {
+        this.scene.remove(hs.activeMesh);
+        hs.activeMesh.geometry.dispose();
+        if (hs.activeMaterial) hs.activeMaterial.dispose();
+      }
+      Object.assign(hs, _makeHandState());
+    }
+
     for (const stroke of this.completedStrokes) {
       if (stroke.mesh) {
         this.scene.remove(stroke.mesh);

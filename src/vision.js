@@ -40,7 +40,7 @@ export function getHandDataVersion() { return _handDataVersion; }
 export const trackingState = {
     headPose: null,
     handLandmarks: [],
-    handInteraction: null
+    handInteraction: []   // array of { x, y, isPinched, pinchDistance } — one per hand
 };
 
 export function setVisionHeadTracking(enabled) {
@@ -51,7 +51,7 @@ export function setVisionHandTracking(enabled) {
   _handTrackingEnabled = enabled;
   if (!enabled) {
     trackingState.handLandmarks = [];
-    trackingState.handInteraction = null;
+    trackingState.handInteraction = [];
     _smoothedLandmarks = null;
   }
 }
@@ -182,22 +182,21 @@ export function updateVision() {
         trackingState.handLandmarks = smoothed;
 
         if (smoothed && smoothed.length > 0) {
-            const hand = smoothed[0];
-            const thumbTip = hand[4];
-            const indexTip = hand[8];
-
-            const dx = thumbTip.x - indexTip.x;
-            const dy = thumbTip.y - indexTip.y;
-            const dist = Math.sqrt(dx*dx + dy*dy);
-
-            trackingState.handInteraction = {
-                x: (thumbTip.x + indexTip.x) / 2,
-                y: (thumbTip.y + indexTip.y) / 2,
-                isPinched: dist < 0.05,
-                pinchDistance: dist
-            };
+            trackingState.handInteraction = smoothed.map(hand => {
+                const thumbTip = hand[4];
+                const indexTip = hand[8];
+                const dx = thumbTip.x - indexTip.x;
+                const dy = thumbTip.y - indexTip.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                return {
+                    x: (thumbTip.x + indexTip.x) / 2,
+                    y: (thumbTip.y + indexTip.y) / 2,
+                    isPinched: dist < 0.05,
+                    pinchDistance: dist
+                };
+            });
         } else {
-            trackingState.handInteraction = null;
+            trackingState.handInteraction = [];
         }
     } catch (e) { /* skip frame */ }
 }

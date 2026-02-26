@@ -329,48 +329,56 @@ async function main() {
           // 3D hand cursor — only update on new data
           if (newHandData) update3DHandCursor(sceneCtx.camera, drawer);
 
-          // --- Open palm detection + ring highlight + push (only on new hand data) ---
+          // --- Open palm detection + ring highlight + push (all hands, only on new data) ---
           if (newHandData && trackingState.handLandmarks && trackingState.handLandmarks.length > 0) {
-            const hand = trackingState.handLandmarks[0];
+            let anyPush = false;
 
-            // Detect open palm: all 4 fingers extended (tips above MCPs in screen y)
-            // Note: don't require !isPinched — thumb position varies with open palm
-            const isOpenPalm = hand.length >= 21 &&
-              hand[8].y < hand[6].y &&   // index extended
-              hand[12].y < hand[10].y &&  // middle extended
-              hand[16].y < hand[14].y &&  // ring extended
-              hand[20].y < hand[18].y;    // pinky extended
-
-            // Palm center: midpoint between wrist (0) and middle finger MCP (9)
-            const palmCenterX = (hand[0].x + hand[9].x) / 2;
-            const palmCenterY = (hand[0].y + hand[9].y) / 2;
-            const handWorldPos = drawer.screenToWorldRaw(palmCenterX, palmCenterY);
-
-            // Palm scale: distance from wrist (0) to middle fingertip (12) in NDC
-            const palmDx = hand[12].x - hand[0].x;
-            const palmDy = hand[12].y - hand[0].y;
-            const palmScale = Math.sqrt(palmDx * palmDx + palmDy * palmDy);
-
-            // Find nearest ring/object to hand
+            // Find nearest stroke across all hands (for highlight)
             let nearestStroke = null;
             let nearestDist = Infinity;
-            if (handWorldPos) {
-              for (const stroke of drawer.completedStrokes) {
-                if (!stroke.mesh) continue;
-                const d = stroke.mesh.position.distanceTo(handWorldPos);
-                if (d < nearestDist) {
-                  nearestDist = d;
-                  nearestStroke = stroke;
+
+            for (let hi = 0; hi < trackingState.handLandmarks.length; hi++) {
+              const hand = trackingState.handLandmarks[hi];
+
+              const isOpenPalm = hand.length >= 21 &&
+                hand[8].y < hand[6].y &&
+                hand[12].y < hand[10].y &&
+                hand[16].y < hand[14].y &&
+                hand[20].y < hand[18].y;
+
+              const palmCenterX = (hand[0].x + hand[9].x) / 2;
+              const palmCenterY = (hand[0].y + hand[9].y) / 2;
+              const handWorldPos = drawer.screenToWorldRaw(palmCenterX, palmCenterY);
+
+              const palmDx = hand[12].x - hand[0].x;
+              const palmDy = hand[12].y - hand[0].y;
+              const palmScale = Math.sqrt(palmDx * palmDx + palmDy * palmDy);
+
+              // Track nearest object across all hands
+              if (handWorldPos) {
+                for (const stroke of drawer.completedStrokes) {
+                  if (!stroke.mesh) continue;
+                  const d = stroke.mesh.position.distanceTo(handWorldPos);
+                  if (d < nearestDist) {
+                    nearestDist = d;
+                    nearestStroke = stroke;
+                  }
                 }
+              }
+
+              if (isOpenPalm && handWorldPos) {
+                const pushMagnitude = Math.max(2.0, palmScale * 80);
+                physics.applyPalmForce(handWorldPos, pushMagnitude);
+                anyPush = true;
               }
             }
 
-            // Debug gesture state (throttled — every 5 seconds)
+            // Debug (throttled)
             if (frameCount % 300 === 0) {
-              console.log(`[Gesture] open=${isOpenPalm} scale=${palmScale.toFixed(3)} nearest=${nearestDist.toFixed(2)}m`);
+              console.log(`[Gesture] hands=${trackingState.handLandmarks.length} nearest=${nearestDist.toFixed(2)}m`);
             }
 
-            // Highlight nearest ring within range
+            // Highlight nearest object within range
             const highlightRange = 1.5;
             for (const stroke of drawer.completedStrokes) {
               if (!stroke.mesh || !stroke.mesh.material) continue;
@@ -386,17 +394,11 @@ async function main() {
               }
             }
 
-            // Apply push force with open palm — magnitude scales with palm size
-            if (isOpenPalm && handWorldPos) {
-              const pushMagnitude = Math.max(2.0, palmScale * 80);
-              physics.applyPalmForce(handWorldPos, pushMagnitude);
-              if (drawIndicator) {
-                drawIndicator.classList.add('active');
-                drawIndicator.textContent = '🖐 Push';
-              }
+            if (anyPush && drawIndicator) {
+              drawIndicator.classList.add('active');
+              drawIndicator.textContent = '🖐 Push';
             }
           } else if (newHandData) {
-            // No hand — clear all highlights (only when hand data actually changed)
             for (const stroke of drawer.completedStrokes) {
               if (stroke.mesh && stroke.mesh.material && stroke.mesh.material.emissive) {
                 stroke.mesh.material.emissive.setHex(0x000000);
@@ -405,11 +407,9 @@ async function main() {
             }
           }
 
-          // Drawing from hand tracking
-          const drawEvent = drawer.update(trackingState.handInteraction);
-
-          // Handle drawing events
-          if (drawEvent && sync) {
+          // Drawing from hand tracking — both hands
+          function handleDrawEvent(drawEvent) {
+            if (!drawEvent || !sync) return;
             switch (drawEvent.type) {
               case 'stroke:start':
                 sync.broadcastStrokeStart(drawEvent.data.id, drawEvent.data.color, drawEvent.data.radius);
@@ -431,8 +431,13 @@ async function main() {
             }
           }
 
-          // Object controls
-          objControls.update(dt);
+          for (let hi = 0; hi < 2; hi++) {
+            const interaction = trackingState.handInteraction[hi] || null;
+            handleDrawEvent(drawer.update(interaction, hi));
+          }
+
+          // Object controls (pass hand interactions for scale hotspots)
+          objControls.update(dt, trackingState.handInteraction);
           quatBall.update(dt);
 
           // Physics step — host runs simulation, non-host lerps from host state
