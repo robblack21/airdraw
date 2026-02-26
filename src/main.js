@@ -83,10 +83,10 @@ function update3DHandCursor(cameraRef, drawerRef) {
     const thumbTip = hand[4];
     const indexTip = hand[8];
 
-    // Pinch midpoint
+    // Pinch midpoint — use Raw version to avoid polluting drawing EMA state
     const midX = (thumbTip.x + indexTip.x) / 2;
     const midY = (thumbTip.y + indexTip.y) / 2;
-    const midWorld = drawerRef.screenToWorld(midX, midY);
+    const midWorld = drawerRef.screenToWorldRaw(midX, midY);
     cursor.sphere.position.copy(midWorld);
 
     // Thumb/index lines
@@ -304,6 +304,11 @@ async function main() {
 
         loadingUi.classList.add('hidden');
 
+        // Cache DOM lookups + reuse objects for zero-alloc render loop
+        const cachedVideoEl = document.getElementById('video');
+        const _tmpQuat = new THREE.Quaternion();
+        const _tmpFwd = new THREE.Vector3();
+
         // Main loop
         let lastTime = 0;
         let frameCount = 0;
@@ -333,7 +338,7 @@ async function main() {
             // Palm center: midpoint between wrist (0) and middle finger MCP (9)
             const palmCenterX = (hand[0].x + hand[9].x) / 2;
             const palmCenterY = (hand[0].y + hand[9].y) / 2;
-            const handWorldPos = drawer.screenToWorld(palmCenterX, palmCenterY);
+            const handWorldPos = drawer.screenToWorldRaw(palmCenterX, palmCenterY);
 
             // Palm scale: distance from wrist (0) to middle fingertip (12) in NDC
             const palmDx = hand[12].x - hand[0].x;
@@ -354,9 +359,9 @@ async function main() {
               }
             }
 
-            // Debug gesture state (throttled)
-            if (frameCount % 60 === 0) {
-              console.log(`[Gesture] open=${isOpenPalm} palm=(${palmCenterX.toFixed(2)},${palmCenterY.toFixed(2)}) scale=${palmScale.toFixed(3)} nearest=${nearestDist.toFixed(2)}m worldPos=(${handWorldPos?.x.toFixed(2)},${handWorldPos?.y.toFixed(2)},${handWorldPos?.z.toFixed(2)})`);
+            // Debug gesture state (throttled — every 5 seconds)
+            if (frameCount % 300 === 0) {
+              console.log(`[Gesture] open=${isOpenPalm} scale=${palmScale.toFixed(3)} nearest=${nearestDist.toFixed(2)}m`);
             }
 
             // Highlight nearest ring within range
@@ -436,16 +441,15 @@ async function main() {
           // Broadcast local camera pose to peers (~10fps, throttled in sync)
           sync.broadcastUserPose(sceneCtx.camera.position, sceneCtx.camera.quaternion);
 
-          // Update peer disc positions from synced poses
+          // Update peer disc positions from synced poses (reuse objects)
           const peerPoses = sync.getPeerPoses();
           for (const [peerId, pose] of peerPoses) {
-            // Position disc slightly below and in front of peer's camera
-            const peerQuat = new THREE.Quaternion(pose.rot[0], pose.rot[1], pose.rot[2], pose.rot[3]);
-            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(peerQuat);
+            _tmpQuat.set(pose.rot[0], pose.rot[1], pose.rot[2], pose.rot[3]);
+            _tmpFwd.set(0, 0, -1).applyQuaternion(_tmpQuat);
             const discPos = [
-              pose.pos[0] + forward.x * 0.5,
-              pose.pos[1] - 0.3 + forward.y * 0.5,
-              pose.pos[2] + forward.z * 0.5
+              pose.pos[0] + _tmpFwd.x * 0.5,
+              pose.pos[1] - 0.3 + _tmpFwd.y * 0.5,
+              pose.pos[2] + _tmpFwd.z * 0.5
             ];
             updatePeerDiscPose(peerId, discPos, pose.rot);
           }
@@ -454,8 +458,7 @@ async function main() {
           updatePeerDiscsBillboard();
 
           // Webcam reflections (throttled internally)
-          const vidEl = document.getElementById('video');
-          if (vidEl) updateWebcamReflection(vidEl, sceneCtx.renderer, sceneCtx.scene);
+          if (cachedVideoEl) updateWebcamReflection(cachedVideoEl, sceneCtx.renderer, sceneCtx.scene);
 
           // Render
           animateScene(time);

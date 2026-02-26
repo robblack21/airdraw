@@ -54,9 +54,24 @@ export class StrokeRecorder {
     this._smoothPos = null;
     this._smoothAlpha = 0.5; // lower = smoother, higher = more responsive
     this._activeMaterial = null; // cached material for active stroke
-    this._activeRadialSegments = 8; // reasonable cross-section during drawing
-    this._rebuildEveryN = 3; // only rebuild geometry every Nth point
+    this._activeRadialSegments = 4; // minimal cross-section during drawing (perf)
+    this._rebuildEveryN = 4; // only rebuild geometry every Nth point
     this._pointsSinceRebuild = 0;
+  }
+
+  /**
+   * Convert screen coords to world WITHOUT updating the EMA smooth state.
+   * Used by 3D cursor so it doesn't pollute drawing smoothing.
+   */
+  screenToWorldRaw(nx, ny) {
+    const ndc = new THREE.Vector3(
+      (1 - nx) * 2 - 1,
+      -(ny * 2 - 1),
+      0.5
+    );
+    ndc.unproject(this.camera);
+    const dir = ndc.sub(this.camera.position).normalize();
+    return this.camera.position.clone().add(dir.multiplyScalar(this.drawDepth));
   }
 
   setColor(hex) {
@@ -241,20 +256,23 @@ export class StrokeRecorder {
       // Replace drawn points with clean circle
       this.activePoints = circlePoints;
 
-      // Rebuild mesh with clean ring
-      if (this.activeMesh) {
-        this.scene.remove(this.activeMesh);
-        this.activeMesh.geometry.dispose();
-      }
-
+      // Rebuild mesh with clean ring — swap geometry + material in place
       const curve = new THREE.CatmullRomCurve3(this.activePoints, true); // closed
-      const geometry = new THREE.TubeGeometry(curve, circleSegments * 2, this.tubeRadius, this.tubeSegments, true);
+      const ringGeo = new THREE.TubeGeometry(curve, 64, this.tubeRadius, this.tubeSegments, true);
       if (this.activeMesh) {
-        this.activeMesh.geometry = geometry;
+        const oldGeo = this.activeMesh.geometry;
+        this.activeMesh.geometry = ringGeo;
+        oldGeo.dispose();
+        // Swap to full material
+        if (this._activeMaterial) {
+          this._activeMaterial.dispose();
+          this.activeMesh.material = this._makeMaterial();
+          this._activeMaterial = null;
+        }
       } else {
-        this.activeMesh = new THREE.Mesh(geometry, this._makeMaterial());
+        this.activeMesh = new THREE.Mesh(ringGeo, this._makeMaterial());
+        this.scene.add(this.activeMesh);
       }
-      this.scene.add(this.activeMesh);
     }
 
     // Full-quality rebuild for non-ring strokes (upgrade from low-LOD active drawing)
@@ -263,12 +281,18 @@ export class StrokeRecorder {
       const curve = new THREE.CatmullRomCurve3(this.activePoints);
       curve.curveType = 'catmullrom';
       curve.tension = 0.5;
-      const segs = Math.max(this.activePoints.length * 3, 16);
+      const segs = Math.min(Math.max(this.activePoints.length * 3, 16), 96);
       const finalGeo = new THREE.TubeGeometry(
         curve, segs, this.tubeRadius, this.tubeSegments, false
       );
       this.activeMesh.geometry = finalGeo;
       oldGeo.dispose();
+    }
+
+    // Upgrade material: swap lightweight active material → full MeshPhysicalMaterial
+    if (this.activeMesh && this._activeMaterial) {
+      this._activeMaterial.dispose();
+      this.activeMesh.material = this._makeMaterial();
     }
 
     const stroke = {
@@ -291,21 +315,34 @@ export class StrokeRecorder {
     return { type: 'stroke:complete', data: stroke };
   }
 
+  /**
+   * Lightweight material for active drawing — no lighting = huge GPU savings.
+   * Swapped to full MeshPhysicalMaterial on endStroke.
+   */
+  _makeActiveMaterial() {
+    return new THREE.MeshStandardMaterial({
+      color: this.color.clone(),
+      metalness: 0.6,
+      roughness: 0.3,
+      envMapIntensity: 1.0,
+    });
+  }
+
   rebuildActiveMesh() {
     if (this.activePoints.length < 2) return;
 
     const curve = new THREE.CatmullRomCurve3(this.activePoints);
     curve.curveType = 'catmullrom';
     curve.tension = 0.5;
-    const segments = Math.min(Math.max(this.activePoints.length * 2, 16), 120);
+    const segments = Math.min(Math.max(this.activePoints.length * 2, 8), 64);
     const geometry = new THREE.TubeGeometry(
       curve, segments, this.tubeRadius, this._activeRadialSegments, false
     );
 
     if (!this.activeMesh) {
-      // Create material once per stroke and cache it
+      // Use lightweight material during drawing for performance
       if (!this._activeMaterial) {
-        this._activeMaterial = this._makeMaterial();
+        this._activeMaterial = this._makeActiveMaterial();
       }
       this.activeMesh = new THREE.Mesh(geometry, this._activeMaterial);
       this.scene.add(this.activeMesh); // add to scene only once

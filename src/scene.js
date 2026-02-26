@@ -307,7 +307,7 @@ export async function initScene() {
     powerPreference: "high-performance",
   });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));  // cap for perf
+  renderer.setPixelRatio(1.0);  // fixed 1x for smooth drawing performance
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.BasicShadowMap;  // cheapest shadow type
   // NOTE: tone mapping and color space are set by hdr.js loadEnvironment()
@@ -324,26 +324,24 @@ export async function initScene() {
   dirLight.shadow.mapSize.height = 512;
   scene.add(dirLight);
 
-  // Subtle warm spot from above
+  // Subtle warm spot from above (no shadow — DirLight handles that)
   const spotLight = new THREE.SpotLight(0xffd6aa, 8);
   spotLight.position.set(0, 4, 0);
   spotLight.angle = Math.PI / 2.5;
   spotLight.penumbra = 0.8;
   spotLight.distance = 12;
-  spotLight.castShadow = true;
-  spotLight.shadow.radius = 4;
-  spotLight.shadow.bias = -0.0001;
+  spotLight.castShadow = false;
   spotLight.target.position.set(0, 0, 0);
   scene.add(spotLight.target);
   scene.add(spotLight);
 
-  // Ground plane with subtle reflections — aligned with physics ground at y=0
+  // Ground plane — aligned with physics ground at y=0
   const groundGeo = new THREE.PlaneGeometry(40, 40);
-  const groundMat = new THREE.MeshPhysicalMaterial({
+  const groundMat = new THREE.MeshStandardMaterial({
     color: 0x1a1a22,
     metalness: 0.1,
-    roughness: 0.12,
-    envMapIntensity: 0.6,
+    roughness: 0.2,
+    envMapIntensity: 0.4,
     transparent: true,
     opacity: 0.85,
   });
