@@ -15,7 +15,8 @@
       "Bash(gh repo create:*)",
       "Bash(git remote set-url:*)",
       "Bash(npx vite build:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(export PATH=\"/usr/local/bin:/opt/homebrew/bin:$HOME/.nvm/versions/node/*/bin:$PATH\")"
     ]
   }
 }

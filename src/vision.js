@@ -12,18 +12,29 @@ let _headTrackingNeeded = false;
 let _handTrackingEnabled = true;
 
 // ── Performance tuning ──────────────────────────────────
-// Hand tracking is expensive (~8-12ms GPU per call).
-// Run at ~6fps (every 10th render frame at 60fps).
-let _frameCount = 0;
-const HAND_EVERY_N = 10;    // run hand detection every 10th frame (~6fps)
-const FACE_EVERY_N = 15;    // run face detection every 15th frame (~4fps)
+// Pure time-based throttle — no frame-count confusion.
+let _handIntervalMs = 33;       // default ~30fps (configurable via slider)
 let _lastHandTime = 0;
-const MIN_HAND_INTERVAL_MS = 100; // absolute floor: max 10fps
+let _faceIntervalMs = 250;      // face tracking ~4fps
+let _lastFaceTime = 0;
+
+// Tracking stats (for UI display)
+let _handDetectCount = 0;
+let _handDetectStartTime = 0;
+let _lastHandDurationMs = 0;
+export function getHandTrackingStats() {
+  const elapsed = performance.now() - _handDetectStartTime;
+  const fps = elapsed > 1000 ? (_handDetectCount / (elapsed / 1000)).toFixed(1) : '--';
+  return { fps, lastDurationMs: _lastHandDurationMs.toFixed(1) };
+}
 
 // ── Smoothing state ──────────────────────────────────────
-// Exponential moving average for landmark positions
-let _smoothedLandmarks = null;  // smoothed copy of hand landmarks
-const SMOOTH_ALPHA = 0.35;      // higher = less lag, lower = smoother
+let _smoothedLandmarks = null;
+const SMOOTH_ALPHA = 0.35;
+
+// Track whether new data arrived (version counter for main loop to gate expensive work)
+let _handDataVersion = 0;
+export function getHandDataVersion() { return _handDataVersion; }
 
 // State to export
 export const trackingState = {
@@ -45,6 +56,15 @@ export function setVisionHandTracking(enabled) {
   }
 }
 
+export function setHandTrackingFps(fps) {
+  fps = Math.max(1, Math.min(30, fps));
+  _handIntervalMs = 1000 / fps;
+}
+
+export function getHandTrackingFps() {
+  return Math.round(1000 / _handIntervalMs);
+}
+
 export async function initVision(sceneContext) {
     console.log("Initializing MediaPipe Vision...");
 
@@ -61,7 +81,8 @@ export async function initVision(sceneContext) {
          numHands: 2
     });
 
-    console.log(`Hand tracking loaded (throttled to ~${Math.round(60/HAND_EVERY_N)}fps, smoothing α=${SMOOTH_ALPHA})`);
+    _handDetectStartTime = performance.now();
+    console.log(`Hand tracking loaded (${getHandTrackingFps()}fps, smoothing α=${SMOOTH_ALPHA})`);
 }
 
 // Lazy-load face landmarker only when first needed
@@ -88,7 +109,6 @@ async function ensureFaceLandmarker() {
 
 /**
  * Smooth landmarks using exponential moving average.
- * Returns a new array of smoothed landmarks.
  */
 function smoothLandmarks(rawLandmarks) {
   if (!rawLandmarks || rawLandmarks.length === 0) {
@@ -97,14 +117,12 @@ function smoothLandmarks(rawLandmarks) {
   }
 
   if (!_smoothedLandmarks || _smoothedLandmarks.length !== rawLandmarks.length) {
-    // First frame or hand count changed — snap
     _smoothedLandmarks = rawLandmarks.map(hand =>
       hand.map(lm => ({ x: lm.x, y: lm.y, z: lm.z }))
     );
     return _smoothedLandmarks;
   }
 
-  // Lerp each landmark toward raw position
   for (let h = 0; h < rawLandmarks.length; h++) {
     const raw = rawLandmarks[h];
     const smooth = _smoothedLandmarks[h];
@@ -127,12 +145,12 @@ export function updateVision() {
     if (!video || !video.videoWidth) return;
     if (video.currentTime === lastVideoTime) return;
 
-    _frameCount++;
     const now = performance.now();
 
-    // ── Face tracking (very infrequent) ──
-    if (_headTrackingNeeded && _frameCount % FACE_EVERY_N === 0) {
+    // ── Face tracking (very infrequent, time-based) ──
+    if (_headTrackingNeeded && (now - _lastFaceTime >= _faceIntervalMs)) {
       if (faceLandmarker) {
+        _lastFaceTime = now;
         try {
             lastVideoTime = video.currentTime;
             const faceResult = faceLandmarker.detectForVideo(video, now);
@@ -145,17 +163,21 @@ export function updateVision() {
       }
     }
 
-    // ── Hand tracking (throttled to ~6fps with time floor) ──
+    // ── Hand tracking (pure time-based throttle) ──
     if (!_handTrackingEnabled || !handLandmarker) return;
-    if (_frameCount % HAND_EVERY_N !== 0) return;
-    if (now - _lastHandTime < MIN_HAND_INTERVAL_MS) return;
+    if (now - _lastHandTime < _handIntervalMs) return;
     _lastHandTime = now;
 
     try {
         lastVideoTime = video.currentTime;
+        const t0 = performance.now();
         const handResult = handLandmarker.detectForVideo(video, now);
+        _lastHandDurationMs = performance.now() - t0;
+        _handDetectCount++;
 
-        // Smooth the raw landmarks
+        // Bump version so main loop knows new data arrived
+        _handDataVersion++;
+
         const smoothed = smoothLandmarks(handResult.landmarks);
         trackingState.handLandmarks = smoothed;
 

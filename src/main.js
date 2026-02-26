@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { initScene, animateScene, updateCameraPose, scene, camera, renderer,
          createPeerDisc, removePeerDisc, updatePeerDiscPose, updatePeerDiscsBillboard } from './scene.js';
-import { initVision, updateVision, trackingState } from './vision.js';
+import { initVision, updateVision, trackingState, getHandDataVersion } from './vision.js';
 import { initUI } from './ui.js';
 import { StrokeRecorder } from './drawing.js';
 import { PhysicsWorld } from './physics.js';
@@ -308,6 +308,7 @@ async function main() {
         const cachedVideoEl = document.getElementById('video');
         const _tmpQuat = new THREE.Quaternion();
         const _tmpFwd = new THREE.Vector3();
+        let _lastHandVersion = 0;
 
         // Main loop
         let lastTime = 0;
@@ -317,14 +318,19 @@ async function main() {
           lastTime = time;
           frameCount++;
 
-          // Vision
+          // Vision (may or may not run detection depending on throttle)
           updateVision();
 
-          // 3D hand cursor
-          update3DHandCursor(sceneCtx.camera, drawer);
+          // Check if new hand data arrived this frame
+          const handVersion = getHandDataVersion();
+          const newHandData = handVersion !== _lastHandVersion;
+          _lastHandVersion = handVersion;
 
-          // --- Open palm detection + ring highlight + push ---
-          if (trackingState.handLandmarks && trackingState.handLandmarks.length > 0) {
+          // 3D hand cursor — only update on new data
+          if (newHandData) update3DHandCursor(sceneCtx.camera, drawer);
+
+          // --- Open palm detection + ring highlight + push (only on new hand data) ---
+          if (newHandData && trackingState.handLandmarks && trackingState.handLandmarks.length > 0) {
             const hand = trackingState.handLandmarks[0];
 
             // Detect open palm: all 4 fingers extended (tips above MCPs in screen y)
@@ -389,8 +395,8 @@ async function main() {
                 drawIndicator.textContent = '🖐 Push';
               }
             }
-          } else {
-            // No hand — clear all highlights
+          } else if (newHandData) {
+            // No hand — clear all highlights (only when hand data actually changed)
             for (const stroke of drawer.completedStrokes) {
               if (stroke.mesh && stroke.mesh.material && stroke.mesh.material.emissive) {
                 stroke.mesh.material.emissive.setHex(0x000000);

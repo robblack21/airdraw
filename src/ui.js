@@ -1,6 +1,6 @@
 import { toggleAudio, toggleVideo, getDevices, setInputDevice } from './video.js';
 import { setHeadTrackingEnabled } from './scene.js';
-import { setVisionHeadTracking, setVisionHandTracking } from './vision.js';
+import { setVisionHeadTracking, setVisionHandTracking, setHandTrackingFps, getHandTrackingFps, getHandTrackingStats } from './vision.js';
 import { PALETTE, PALETTE_MATERIALS } from './drawing.js';
 import { setWebcamReflectionEnabled } from './hdr.js';
 
@@ -36,6 +36,9 @@ export class CallUI {
     this.brushSizeVal = document.getElementById('brush-size-val');
     this.drawDepthInput = document.getElementById('draw-depth');
     this.drawDepthVal = document.getElementById('draw-depth-val');
+    this.handFpsInput = document.getElementById('hand-fps');
+    this.handFpsVal = document.getElementById('hand-fps-val');
+    this.handFpsStats = document.getElementById('hand-fps-stats');
 
     // New buttons
     this.gravityBtn = document.getElementById('btn-gravity');
@@ -332,8 +335,22 @@ export class CallUI {
           this.colorPalette.classList.add('hidden');
           this.isColorOpen = false;
           await this.populateDevices();
+          // Sync slider to current value
+          if (this.handFpsInput) this.handFpsInput.value = getHandTrackingFps();
+          if (this.handFpsVal) this.handFpsVal.textContent = getHandTrackingFps() + ' fps';
+          // Start live stats while panel is open
+          this._handFpsStatsInterval = setInterval(() => {
+            if (this.handFpsStats) {
+              const stats = getHandTrackingStats();
+              this.handFpsStats.textContent = `actual: ${stats.fps} fps, ${stats.lastDurationMs}ms/call`;
+            }
+          }, 500);
         } else {
           this.settingsMenu.classList.add('hidden');
+          if (this._handFpsStatsInterval) {
+            clearInterval(this._handFpsStatsInterval);
+            this._handFpsStatsInterval = null;
+          }
         }
       });
     }
@@ -366,6 +383,17 @@ export class CallUI {
         if (this.drawDepthVal) this.drawDepthVal.textContent = val.toFixed(1) + 'm';
         if (drawerRef) drawerRef.setDrawDepth(val);
       });
+    }
+
+    // Hand tracking FPS
+    if (this.handFpsInput) {
+      this.handFpsInput.addEventListener('input', () => {
+        const val = parseInt(this.handFpsInput.value);
+        setHandTrackingFps(val);
+        if (this.handFpsVal) this.handFpsVal.textContent = val + ' fps';
+      });
+      // Live stats update while settings panel is open
+      this._handFpsStatsInterval = null;
     }
 
     // Close menus on outside click
