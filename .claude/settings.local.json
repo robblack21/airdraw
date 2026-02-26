@@ -21,7 +21,25 @@
       "Bash(git checkout gh-pages)",
       "Bash(git stash)",
       "Bash(npx gh-pages --version)",
-      "Bash(npx gh-pages -d dist --dotfiles)"
+      "Bash(npx gh-pages -d dist --dotfiles)",
+      "Bash(gh repo view --json name,url)",
+      "Bash(gh api repos/robblack21/airdraw/pages)",
+      "Bash(gh api repos/robblack21/airdraw/pages/builds --jq '.[0]')",
+      "Bash(gh api repos/robblack21/airdraw/pages/builds --jq '.[].status')",
+      "Bash(gh api repos/robblack21/airdraw/pages/builds --jq '.[1].error')",
+      "Bash(du -sh /Users/robblack/airdraw/dist/*)",
+      "Bash(gh api repos/robblack21/airdraw/pages --jq '.status')",
+      "Bash(gh api repos/robblack21/airdraw/pages/builds --jq '.[0] | {status, created_at, error}')",
+      "Bash(gh api repos/robblack21/airdraw/actions/runs --jq '.workflow_runs[:3] | .[] | {name, status, conclusion, created_at}')",
+      "Bash(gh api repos/robblack21/airdraw/actions/runs --jq '.workflow_runs[0].id')",
+      "Bash(gh api repos/robblack21/airdraw/actions/runs/22458986658/jobs --jq '.jobs[] | {name, status, conclusion, steps: [.steps[] | {name, conclusion}]}')",
+      "Bash(gh api repos/robblack21/airdraw/actions/runs/22458986658/jobs --jq '.jobs[0].steps[2]')",
+      "Bash(gh run view 22458986658 --log-failed)",
+      "Bash(gh api repos/robblack21/airdraw/actions/runs --jq '.workflow_runs[0] | {status, conclusion, created_at}')",
+      "Bash(git ls-tree origin/gh-pages -r)",
+      "Bash(git -C /Users/robblack/airdraw diff --stat)",
+      "Bash(git rm -r --cached dist/)",
+      "Bash(git add index.html vite.config.js public/ .claude/settings.local.json)"
     ]
   }
 }
