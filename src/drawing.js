@@ -300,6 +300,7 @@ export class StrokeRecorder {
       mesh: hs.activeMesh,
       points: hs.activePoints.map(p => [p.x, p.y, p.z]),
       color: '#' + this.color.getHexString(),
+      tubeRadius: this.tubeRadius,
       id: hs.activeStrokeId,
       isRing,
       center: center ? [center.x, center.y, center.z] : null,
@@ -360,17 +361,26 @@ export class StrokeRecorder {
 
     const curve = new THREE.CatmullRomCurve3(points, strokeData.isRing || false);
     const segments = Math.max(points.length * 3, 16);
-    const radius = strokeData.radius || this.tubeRadius;
-    const geometry = new THREE.TubeGeometry(curve, segments, radius, this.tubeSegments, strokeData.isRing || false);
+    // Use the original sender's tubeRadius, not local brush size
+    const tubR = strokeData.tubeRadius || this.tubeRadius;
+    const geometry = new THREE.TubeGeometry(curve, segments, tubR, this.tubeSegments, strokeData.isRing || false);
 
+    // Match local material quality — use PALETTE_MATERIALS for correct metalness/roughness
+    const colorHex = strokeData.color || '#ffffff';
+    const matProps = PALETTE_MATERIALS[colorHex] || { metalness: 0.9, roughness: 0.1 };
     const material = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(strokeData.color || '#ffffff'),
-      metalness: 0.9,
-      roughness: 0.1,
+      color: new THREE.Color(colorHex),
+      metalness: matProps.metalness,
+      roughness: matProps.roughness,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.03,
-      envMapIntensity: 2.5,
-      reflectivity: 1.0
+      clearcoatRoughness: 0.02,
+      envMapIntensity: 3.0,
+      reflectivity: 1.0,
+      iridescence: 0.4,
+      iridescenceIOR: 1.6,
+      sheen: 0.2,
+      sheenColor: new THREE.Color(0xffffff),
+      sheenRoughness: 0.15
     });
 
     const mesh = new THREE.Mesh(geometry, material);
@@ -474,7 +484,7 @@ export class StrokeRecorder {
     this.remoteStrokes.clear();
   }
 
-  addPrimitive(type, position, scale = 1.5) {
+  addPrimitive(type, position, scale = 1.5, colorHex = null) {
     let geometry;
     switch (type) {
       case 'cube':
@@ -493,7 +503,21 @@ export class StrokeRecorder {
         geometry = new THREE.BoxGeometry(scale, scale, scale);
     }
 
+    // Use provided color (from remote) or current local color
+    const useColorHex = colorHex || ('#' + this.color.getHexString());
+    const savedColor = this.color.clone();
+    const savedHex = this.colorHex;
+    if (colorHex) {
+      this.color = new THREE.Color(colorHex);
+      this.colorHex = colorHex;
+    }
     const material = this._makeMaterial();
+    // Restore local color if we temporarily changed it
+    if (colorHex) {
+      this.color = savedColor;
+      this.colorHex = savedHex;
+    }
+
     const mesh = new THREE.Mesh(geometry, material);
     const pos = position || new THREE.Vector3(0, 1.0, 0);
     mesh.position.copy(pos);
@@ -507,7 +531,7 @@ export class StrokeRecorder {
       id,
       isPrimitive: true,
       primitiveType: type,
-      color: '#' + this.color.getHexString(),
+      color: useColorHex,
       position: [pos.x, pos.y, pos.z],
       scale,
       points: [],

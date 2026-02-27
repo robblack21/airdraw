@@ -130,7 +130,7 @@ let isDragging = false;
 let dragBody = null;
 let dragPlane = null;
 
-function initDragInteraction(physicsWorld, sceneRef, cameraRef, rendererRef) {
+function initDragInteraction(physicsWorld, sceneRef, cameraRef, rendererRef, syncRef) {
   raycaster = new THREE.Raycaster();
   mouse = new THREE.Vector2();
   dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -187,8 +187,15 @@ function initDragInteraction(physicsWorld, sceneRef, cameraRef, rendererRef) {
       const dx = target.x - pos.x;
       const dy = target.y - pos.y;
       const dz = target.z - pos.z;
-      dragBody.entry.body.applyImpulse({ x: dx * 2.0, y: dy * 2.0, z: dz * 2.0 }, true);
-      dragBody.entry.body.wakeUp();
+      const impulse = { x: dx * 2.0, y: dy * 2.0, z: dz * 2.0 };
+      if (!syncRef || syncRef.getIsHost()) {
+        // Host: apply locally (result flows to peers via physics:sync)
+        dragBody.entry.body.applyImpulse(impulse, true);
+        dragBody.entry.body.wakeUp();
+      } else {
+        // Non-host: forward to host who applies it in the physics world
+        syncRef.broadcastDragImpulse(dragBody.id, impulse);
+      }
     }
   });
 
@@ -234,7 +241,12 @@ async function main() {
     );
 
     // 8. UI
-    initUI(drawer, physics, sync, objControls, quatBall);
+    const ui = initUI(drawer, physics, sync, objControls, quatBall);
+
+    // Wire up sync toggle callback → keep UI buttons in sync with remote peers
+    sync.setToggleCallback((type, enabled) => {
+      if (ui) ui.applyRemoteToggle(type, enabled);
+    });
 
     // 9. Build demo scene — 3 interlocked rings
     loadingDetails.textContent = 'Building demo scene...';
@@ -277,8 +289,8 @@ async function main() {
           await initVision(sceneCtx);
         } catch (e) { console.error('Vision init failed:', e); }
 
-        // Init drag interaction
-        initDragInteraction(physics, sceneCtx.scene, sceneCtx.camera, sceneCtx.renderer);
+        // Init drag interaction (pass sync for non-host impulse forwarding)
+        initDragInteraction(physics, sceneCtx.scene, sceneCtx.camera, sceneCtx.renderer, sync);
 
         // Initialize Daily.co video call for multiplayer
         try {
@@ -368,7 +380,13 @@ async function main() {
 
               if (isOpenPalm && handWorldPos) {
                 const pushMagnitude = Math.max(2.0, palmScale * 80);
-                physics.applyPalmForce(handWorldPos, pushMagnitude);
+                if (sync.getIsHost()) {
+                  // Host: apply locally (result flows to peers via physics:sync)
+                  physics.applyPalmForce(handWorldPos, pushMagnitude);
+                } else {
+                  // Non-host: forward to host who applies it in the physics world
+                  sync.broadcastPalmForce(handWorldPos, pushMagnitude);
+                }
                 anyPush = true;
               }
             }

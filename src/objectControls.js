@@ -41,6 +41,10 @@ export class ObjectControls {
     this._grabState = null;    // { hotspotIdx, initialDist, initialScale }
     this._grabRange = 0.12;    // how close pinch must be to grab (world units)
 
+    // Throttle transform broadcasts (~30fps instead of every frame)
+    this._lastBroadcastTime = 0;
+    this._broadcastInterval = 33; // ms
+
     this.dom.addEventListener('mousemove', (e) => this._onMouseMove(e));
     this.dom.addEventListener('click', (e) => this._onClick(e));
   }
@@ -243,6 +247,19 @@ export class ObjectControls {
         const ratio = currentDist / Math.max(this._grabState.initialDist, 0.01);
         const clamped = Math.max(0.1, Math.min(10, ratio));
         selectedMesh.scale.copy(this._grabState.initialScale).multiplyScalar(clamped);
+
+        // Stream transform during drag (throttled) so remote peers see scaling in real-time
+        const now = performance.now();
+        if (this.sync && selectedStroke && now - this._lastBroadcastTime >= this._broadcastInterval) {
+          this._lastBroadcastTime = now;
+          this.sync.broadcast({
+            type: 'object:transform',
+            id: selectedStroke.id,
+            pos: [selectedMesh.position.x, selectedMesh.position.y, selectedMesh.position.z],
+            rot: [selectedMesh.rotation.x, selectedMesh.rotation.y, selectedMesh.rotation.z],
+            scale: [selectedMesh.scale.x, selectedMesh.scale.y, selectedMesh.scale.z]
+          });
+        }
         break; // only one grab at a time
       }
     }
@@ -317,19 +334,22 @@ export class ObjectControls {
       }
     }
 
-    // Broadcast transform if changed
-    if (this.sync && selectedStroke && (
-      keys.r || keys.y || keys.o || keys.p ||
+    // Broadcast transform if changed (throttled to ~30fps to avoid flooding network)
+    const anyKey = keys.r || keys.y || keys.o || keys.p ||
       keys.t || keys.b || keys.g || keys.h || keys.f || keys.v ||
-      keys[','] || keys['.']
-    )) {
-      this.sync.broadcast({
-        type: 'object:transform',
-        id: selectedStroke.id,
-        pos: [selectedMesh.position.x, selectedMesh.position.y, selectedMesh.position.z],
-        rot: [selectedMesh.rotation.x, selectedMesh.rotation.y, selectedMesh.rotation.z],
-        scale: [selectedMesh.scale.x, selectedMesh.scale.y, selectedMesh.scale.z]
-      });
+      keys[','] || keys['.'];
+    if (this.sync && selectedStroke && anyKey) {
+      const now = performance.now();
+      if (now - this._lastBroadcastTime >= this._broadcastInterval) {
+        this._lastBroadcastTime = now;
+        this.sync.broadcast({
+          type: 'object:transform',
+          id: selectedStroke.id,
+          pos: [selectedMesh.position.x, selectedMesh.position.y, selectedMesh.position.z],
+          rot: [selectedMesh.rotation.x, selectedMesh.rotation.y, selectedMesh.rotation.z],
+          scale: [selectedMesh.scale.x, selectedMesh.scale.y, selectedMesh.scale.z]
+        });
+      }
     }
   }
 }

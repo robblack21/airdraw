@@ -17,6 +17,7 @@ export class DrawingSync {
     // Remote physics lerp targets (for smooth interpolation)
     this._lerpTargets = new Map(); // id -> { pos: Vector3, rot: Quaternion }
     this._lerpAlpha = 0.25; // Interpolation speed (0-1, higher = snappier)
+    this._onToggle = null;  // callback for remote toggle events → UI sync
   }
 
   setCallObject(co) {
@@ -106,6 +107,29 @@ export class DrawingSync {
   // Broadcast a toggle state change (physics, gravity, etc.)
   broadcastToggle(toggleType, enabled) {
     this.broadcast({ type: `toggle:${toggleType}`, enabled });
+  }
+
+  // Register callback for remote toggle events so UI can stay in sync
+  setToggleCallback(cb) {
+    this._onToggle = cb;
+  }
+
+  // Broadcast palm-push force (non-host → host applies it in physics world)
+  broadcastPalmForce(position, magnitude) {
+    this.broadcast({
+      type: 'palm:force',
+      pos: [position.x, position.y, position.z],
+      magnitude
+    });
+  }
+
+  // Broadcast mouse-drag impulse (non-host → host applies it in physics world)
+  broadcastDragImpulse(bodyId, impulse) {
+    this.broadcast({
+      type: 'drag:impulse',
+      id: bodyId,
+      impulse: [impulse.x, impulse.y, impulse.z]
+    });
   }
 
   // High-frequency physics sync using rAF (aims for 60fps)
@@ -229,7 +253,7 @@ export class DrawingSync {
 
       case 'primitive:create':
         if (drawer) {
-          const prim = drawer.addPrimitive(data.primitiveType, new THREE.Vector3(data.position[0], data.position[1], data.position[2]), data.scale);
+          const prim = drawer.addPrimitive(data.primitiveType, new THREE.Vector3(data.position[0], data.position[1], data.position[2]), data.scale, data.color || null);
           if (prim && physics) {
             physics.addPrimitive(prim.id, data.primitiveType, data.position, data.scale, prim.mesh);
           }
@@ -248,10 +272,31 @@ export class DrawingSync {
         break;
       case 'toggle:physics':
         if (physics) physics.setEnabled(data.enabled);
+        if (this._onToggle) this._onToggle('physics', data.enabled);
         break;
 
       case 'toggle:gravity':
         if (physics) physics.setGravityEnabled(data.enabled);
+        if (this._onToggle) this._onToggle('gravity', data.enabled);
+        break;
+
+      case 'palm:force':
+        // Only host applies remote palm forces (result flows back via physics:sync)
+        if (physics && isHost && data.pos) {
+          const palmPos = new THREE.Vector3(data.pos[0], data.pos[1], data.pos[2]);
+          physics.applyPalmForce(palmPos, data.magnitude || 15.0);
+        }
+        break;
+
+      case 'drag:impulse':
+        // Only host applies remote drag impulses
+        if (physics && isHost && data.id) {
+          const entry = physics.bodies.get(data.id);
+          if (entry && entry.body) {
+            entry.body.applyImpulse({ x: data.impulse[0], y: data.impulse[1], z: data.impulse[2] }, true);
+            entry.body.wakeUp();
+          }
+        }
         break;
 
       case 'user:pose':

@@ -267,6 +267,7 @@ export class CallUI {
       this.physicsBtn.addEventListener('click', () => {
         this.isPhysicsOn = !this.isPhysicsOn;
         if (physicsRef) physicsRef.setEnabled(this.isPhysicsOn);
+        if (syncRef) syncRef.broadcastToggle('physics', this.isPhysicsOn);
         this.physicsBtn.style.opacity = this.isPhysicsOn ? '1' : '0.4';
       });
     }
@@ -276,6 +277,7 @@ export class CallUI {
       this.gravityBtn.addEventListener('click', () => {
         this.isGravityOn = !this.isGravityOn;
         if (physicsRef) physicsRef.setGravityEnabled(this.isGravityOn);
+        if (syncRef) syncRef.broadcastToggle('gravity', this.isGravityOn);
         this.gravityBtn.style.opacity = this.isGravityOn ? '1' : '0.4';
       });
     }
@@ -430,6 +432,17 @@ export class CallUI {
         this.isHelpOpen = false;
       }
     });
+  }
+
+  // Called when a remote peer toggles physics/gravity — keep local UI in sync
+  applyRemoteToggle(type, enabled) {
+    if (type === 'physics') {
+      this.isPhysicsOn = enabled;
+      if (this.physicsBtn) this.physicsBtn.style.opacity = enabled ? '1' : '0.4';
+    } else if (type === 'gravity') {
+      this.isGravityOn = enabled;
+      if (this.gravityBtn) this.gravityBtn.style.opacity = enabled ? '1' : '0.4';
+    }
   }
 
   async populateDevices() {
