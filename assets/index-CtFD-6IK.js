@@ -1124,6 +1124,7 @@ class StrokeRecorder {
       mesh: hs.activeMesh,
       points: hs.activePoints.map(p => [p.x, p.y, p.z]),
       color: '#' + this.color.getHexString(),
+      tubeRadius: this.tubeRadius,
       id: hs.activeStrokeId,
       isRing,
       center: center ? [center.x, center.y, center.z] : null,
@@ -1184,17 +1185,26 @@ class StrokeRecorder {
 
     const curve = new THREE.CatmullRomCurve3(points, strokeData.isRing || false);
     const segments = Math.max(points.length * 3, 16);
-    const radius = strokeData.radius || this.tubeRadius;
-    const geometry = new THREE.TubeGeometry(curve, segments, radius, this.tubeSegments, strokeData.isRing || false);
+    // Use the original sender's tubeRadius, not local brush size
+    const tubR = strokeData.tubeRadius || this.tubeRadius;
+    const geometry = new THREE.TubeGeometry(curve, segments, tubR, this.tubeSegments, strokeData.isRing || false);
 
+    // Match local material quality — use PALETTE_MATERIALS for correct metalness/roughness
+    const colorHex = strokeData.color || '#ffffff';
+    const matProps = PALETTE_MATERIALS[colorHex] || { metalness: 0.9, roughness: 0.1 };
     const material = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(strokeData.color || '#ffffff'),
-      metalness: 0.9,
-      roughness: 0.1,
+      color: new THREE.Color(colorHex),
+      metalness: matProps.metalness,
+      roughness: matProps.roughness,
       clearcoat: 1.0,
-      clearcoatRoughness: 0.03,
-      envMapIntensity: 2.5,
-      reflectivity: 1.0
+      clearcoatRoughness: 0.02,
+      envMapIntensity: 3.0,
+      reflectivity: 1.0,
+      iridescence: 0.4,
+      iridescenceIOR: 1.6,
+      sheen: 0.2,
+      sheenColor: new THREE.Color(0xffffff),
+      sheenRoughness: 0.15
     });
 
     const mesh = new THREE.Mesh(geometry, material);
@@ -1298,7 +1308,7 @@ class StrokeRecorder {
     this.remoteStrokes.clear();
   }
 
-  addPrimitive(type, position, scale = 1.5) {
+  addPrimitive(type, position, scale = 1.5, colorHex = null) {
     let geometry;
     switch (type) {
       case 'cube':
@@ -1317,7 +1327,21 @@ class StrokeRecorder {
         geometry = new THREE.BoxGeometry(scale, scale, scale);
     }
 
+    // Use provided color (from remote) or current local color
+    const useColorHex = colorHex || ('#' + this.color.getHexString());
+    const savedColor = this.color.clone();
+    const savedHex = this.colorHex;
+    if (colorHex) {
+      this.color = new THREE.Color(colorHex);
+      this.colorHex = colorHex;
+    }
     const material = this._makeMaterial();
+    // Restore local color if we temporarily changed it
+    if (colorHex) {
+      this.color = savedColor;
+      this.colorHex = savedHex;
+    }
+
     const mesh = new THREE.Mesh(geometry, material);
     const pos = position || new THREE.Vector3(0, 1.0, 0);
     mesh.position.copy(pos);
@@ -1331,7 +1355,7 @@ class StrokeRecorder {
       id,
       isPrimitive: true,
       primitiveType: type,
-      color: '#' + this.color.getHexString(),
+      color: useColorHex,
       position: [pos.x, pos.y, pos.z],
       scale,
       points: [],
@@ -1737,6 +1761,7 @@ class CallUI {
       this.physicsBtn.addEventListener('click', () => {
         this.isPhysicsOn = !this.isPhysicsOn;
         if (physicsRef) physicsRef.setEnabled(this.isPhysicsOn);
+        if (syncRef) syncRef.broadcastToggle('physics', this.isPhysicsOn);
         this.physicsBtn.style.opacity = this.isPhysicsOn ? '1' : '0.4';
       });
     }
@@ -1746,6 +1771,7 @@ class CallUI {
       this.gravityBtn.addEventListener('click', () => {
         this.isGravityOn = !this.isGravityOn;
         if (physicsRef) physicsRef.setGravityEnabled(this.isGravityOn);
+        if (syncRef) syncRef.broadcastToggle('gravity', this.isGravityOn);
         this.gravityBtn.style.opacity = this.isGravityOn ? '1' : '0.4';
       });
     }
@@ -1900,6 +1926,17 @@ class CallUI {
         this.isHelpOpen = false;
       }
     });
+  }
+
+  // Called when a remote peer toggles physics/gravity — keep local UI in sync
+  applyRemoteToggle(type, enabled) {
+    if (type === 'physics') {
+      this.isPhysicsOn = enabled;
+      if (this.physicsBtn) this.physicsBtn.style.opacity = enabled ? '1' : '0.4';
+    } else if (type === 'gravity') {
+      this.isGravityOn = enabled;
+      if (this.gravityBtn) this.gravityBtn.style.opacity = enabled ? '1' : '0.4';
+    }
   }
 
   async populateDevices() {
@@ -2213,6 +2250,7 @@ class DrawingSync {
     // Remote physics lerp targets (for smooth interpolation)
     this._lerpTargets = new Map(); // id -> { pos: Vector3, rot: Quaternion }
     this._lerpAlpha = 0.25; // Interpolation speed (0-1, higher = snappier)
+    this._onToggle = null;  // callback for remote toggle events → UI sync
   }
 
   setCallObject(co) {
@@ -2302,6 +2340,29 @@ class DrawingSync {
   // Broadcast a toggle state change (physics, gravity, etc.)
   broadcastToggle(toggleType, enabled) {
     this.broadcast({ type: `toggle:${toggleType}`, enabled });
+  }
+
+  // Register callback for remote toggle events so UI can stay in sync
+  setToggleCallback(cb) {
+    this._onToggle = cb;
+  }
+
+  // Broadcast palm-push force (non-host → host applies it in physics world)
+  broadcastPalmForce(position, magnitude) {
+    this.broadcast({
+      type: 'palm:force',
+      pos: [position.x, position.y, position.z],
+      magnitude
+    });
+  }
+
+  // Broadcast mouse-drag impulse (non-host → host applies it in physics world)
+  broadcastDragImpulse(bodyId, impulse) {
+    this.broadcast({
+      type: 'drag:impulse',
+      id: bodyId,
+      impulse: [impulse.x, impulse.y, impulse.z]
+    });
   }
 
   // High-frequency physics sync using rAF (aims for 60fps)
@@ -2425,7 +2486,7 @@ class DrawingSync {
 
       case 'primitive:create':
         if (drawer) {
-          const prim = drawer.addPrimitive(data.primitiveType, new THREE.Vector3(data.position[0], data.position[1], data.position[2]), data.scale);
+          const prim = drawer.addPrimitive(data.primitiveType, new THREE.Vector3(data.position[0], data.position[1], data.position[2]), data.scale, data.color || null);
           if (prim && physics) {
             physics.addPrimitive(prim.id, data.primitiveType, data.position, data.scale, prim.mesh);
           }
@@ -2444,10 +2505,31 @@ class DrawingSync {
         break;
       case 'toggle:physics':
         if (physics) physics.setEnabled(data.enabled);
+        if (this._onToggle) this._onToggle('physics', data.enabled);
         break;
 
       case 'toggle:gravity':
         if (physics) physics.setGravityEnabled(data.enabled);
+        if (this._onToggle) this._onToggle('gravity', data.enabled);
+        break;
+
+      case 'palm:force':
+        // Only host applies remote palm forces (result flows back via physics:sync)
+        if (physics && isHost && data.pos) {
+          const palmPos = new THREE.Vector3(data.pos[0], data.pos[1], data.pos[2]);
+          physics.applyPalmForce(palmPos, data.magnitude || 15.0);
+        }
+        break;
+
+      case 'drag:impulse':
+        // Only host applies remote drag impulses
+        if (physics && isHost && data.id) {
+          const entry = physics.bodies.get(data.id);
+          if (entry && entry.body) {
+            entry.body.applyImpulse({ x: data.impulse[0], y: data.impulse[1], z: data.impulse[2] }, true);
+            entry.body.wakeUp();
+          }
+        }
         break;
 
       case 'user:pose':
@@ -2499,6 +2581,10 @@ class ObjectControls {
     this._hotspots = [];       // [meshMin, meshMax] or empty
     this._grabState = null;    // { hotspotIdx, initialDist, initialScale }
     this._grabRange = 0.12;    // how close pinch must be to grab (world units)
+
+    // Throttle transform broadcasts (~30fps instead of every frame)
+    this._lastBroadcastTime = 0;
+    this._broadcastInterval = 33; // ms
 
     this.dom.addEventListener('mousemove', (e) => this._onMouseMove(e));
     this.dom.addEventListener('click', (e) => this._onClick(e));
@@ -2700,6 +2786,19 @@ class ObjectControls {
         const ratio = currentDist / Math.max(this._grabState.initialDist, 0.01);
         const clamped = Math.max(0.1, Math.min(10, ratio));
         selectedMesh.scale.copy(this._grabState.initialScale).multiplyScalar(clamped);
+
+        // Stream transform during drag (throttled) so remote peers see scaling in real-time
+        const now = performance.now();
+        if (this.sync && selectedStroke && now - this._lastBroadcastTime >= this._broadcastInterval) {
+          this._lastBroadcastTime = now;
+          this.sync.broadcast({
+            type: 'object:transform',
+            id: selectedStroke.id,
+            pos: [selectedMesh.position.x, selectedMesh.position.y, selectedMesh.position.z],
+            rot: [selectedMesh.rotation.x, selectedMesh.rotation.y, selectedMesh.rotation.z],
+            scale: [selectedMesh.scale.x, selectedMesh.scale.y, selectedMesh.scale.z]
+          });
+        }
         break; // only one grab at a time
       }
     }
@@ -2774,19 +2873,22 @@ class ObjectControls {
       }
     }
 
-    // Broadcast transform if changed
-    if (this.sync && selectedStroke && (
-      keys.r || keys.y || keys.o || keys.p ||
+    // Broadcast transform if changed (throttled to ~30fps to avoid flooding network)
+    const anyKey = keys.r || keys.y || keys.o || keys.p ||
       keys.t || keys.b || keys.g || keys.h || keys.f || keys.v ||
-      keys[','] || keys['.']
-    )) {
-      this.sync.broadcast({
-        type: 'object:transform',
-        id: selectedStroke.id,
-        pos: [selectedMesh.position.x, selectedMesh.position.y, selectedMesh.position.z],
-        rot: [selectedMesh.rotation.x, selectedMesh.rotation.y, selectedMesh.rotation.z],
-        scale: [selectedMesh.scale.x, selectedMesh.scale.y, selectedMesh.scale.z]
-      });
+      keys[','] || keys['.'];
+    if (this.sync && selectedStroke && anyKey) {
+      const now = performance.now();
+      if (now - this._lastBroadcastTime >= this._broadcastInterval) {
+        this._lastBroadcastTime = now;
+        this.sync.broadcast({
+          type: 'object:transform',
+          id: selectedStroke.id,
+          pos: [selectedMesh.position.x, selectedMesh.position.y, selectedMesh.position.z],
+          rot: [selectedMesh.rotation.x, selectedMesh.rotation.y, selectedMesh.rotation.z],
+          scale: [selectedMesh.scale.x, selectedMesh.scale.y, selectedMesh.scale.z]
+        });
+      }
     }
   }
 }
@@ -3348,7 +3450,7 @@ let isDragging = false;
 let dragBody = null;
 let dragPlane = null;
 
-function initDragInteraction(physicsWorld, sceneRef, cameraRef, rendererRef) {
+function initDragInteraction(physicsWorld, sceneRef, cameraRef, rendererRef, syncRef) {
   raycaster = new THREE.Raycaster();
   mouse = new THREE.Vector2();
   dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -3405,8 +3507,15 @@ function initDragInteraction(physicsWorld, sceneRef, cameraRef, rendererRef) {
       const dx = target.x - pos.x;
       const dy = target.y - pos.y;
       const dz = target.z - pos.z;
-      dragBody.entry.body.applyImpulse({ x: dx * 2.0, y: dy * 2.0, z: dz * 2.0 }, true);
-      dragBody.entry.body.wakeUp();
+      const impulse = { x: dx * 2.0, y: dy * 2.0, z: dz * 2.0 };
+      if (!syncRef || syncRef.getIsHost()) {
+        // Host: apply locally (result flows to peers via physics:sync)
+        dragBody.entry.body.applyImpulse(impulse, true);
+        dragBody.entry.body.wakeUp();
+      } else {
+        // Non-host: forward to host who applies it in the physics world
+        syncRef.broadcastDragImpulse(dragBody.id, impulse);
+      }
     }
   });
 
@@ -3452,7 +3561,12 @@ async function main() {
     );
 
     // 8. UI
-    initUI(drawer, physics, sync, objControls, quatBall);
+    const ui = initUI(drawer, physics, sync, objControls, quatBall);
+
+    // Wire up sync toggle callback → keep UI buttons in sync with remote peers
+    sync.setToggleCallback((type, enabled) => {
+      if (ui) ui.applyRemoteToggle(type, enabled);
+    });
 
     // 9. Build demo scene — 3 interlocked rings
     loadingDetails.textContent = 'Building demo scene...';
@@ -3495,8 +3609,8 @@ async function main() {
           await initVision(sceneCtx);
         } catch (e) { console.error('Vision init failed:', e); }
 
-        // Init drag interaction
-        initDragInteraction(physics, sceneCtx.scene, sceneCtx.camera, sceneCtx.renderer);
+        // Init drag interaction (pass sync for non-host impulse forwarding)
+        initDragInteraction(physics, sceneCtx.scene, sceneCtx.camera, sceneCtx.renderer, sync);
 
         // Initialize Daily.co video call for multiplayer
         try {
@@ -3586,7 +3700,13 @@ async function main() {
 
               if (isOpenPalm && handWorldPos) {
                 const pushMagnitude = Math.max(2.0, palmScale * 80);
-                physics.applyPalmForce(handWorldPos, pushMagnitude);
+                if (sync.getIsHost()) {
+                  // Host: apply locally (result flows to peers via physics:sync)
+                  physics.applyPalmForce(handWorldPos, pushMagnitude);
+                } else {
+                  // Non-host: forward to host who applies it in the physics world
+                  sync.broadcastPalmForce(handWorldPos, pushMagnitude);
+                }
                 anyPush = true;
               }
             }
